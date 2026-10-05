@@ -21,7 +21,7 @@ The browser never receives `HELIUS_API_KEY`, `OLLAMA_API_KEY`, `TYPEDB_TOKEN`, `
 
 3. Open [http://localhost:3000](http://localhost:3000).
 
-The Decision view is the chat. Quote asks Titan DART by default (or Portal when configured) and can open a Direct quote stream. Orders runs SIWS onboard plus partner intent/confirm. Desk and Analytics are placeholders until wired to your book.
+The Decision view is the chat. Quote asks Titan DART by default (or Portal when configured) and can open a Direct quote stream. Orders runs SIWS onboard plus partner intent/confirm. Desk shows wallet SOL, partner positions/fills (`amountSpent` / `amountReceived`, DCA cycles, `currentTriggerPrice`, `availableToWithdraw`) when `TITAN_DCA_*` is set. Analytics shows session counts, personal spent→received fills, and the TypeDB rule book — honest empty states when data is missing.
 
 ## Services
 
@@ -106,4 +106,10 @@ For vLLM instead of Ollama, serve `togethercomputer/Tev1-0.8B-experimental`, set
 
 ## Solana client
 
-`lib/client.ts` builds one Kit client with `walletSigner` and `solanaRpc`. Transactions are planned as version 1. The wallet panel shows the cluster, whether the RPC is Helius or public devnet, the connected address, and the SOL balance. A wallet that cannot sign version 1 transactions shows a warning and is not asked to send one from this desk.
+`lib/client.ts` builds one Kit client with `walletSigner` and `solanaRpc`. Transactions are planned as version 1. The wallet panel shows the cluster, whether the RPC is Helius, public devnet, or a local validator, the connected address, and the SOL balance. A wallet that cannot sign version 1 transactions shows a warning and is not asked to send one from this desk.
+
+### Kit + Wallet Standard (not classic Anza adapters)
+
+TevTrade keeps `@solana/kit` + `@solana/kit-plugin-wallet` as the only connect/sign path. Wallet Standard extensions register themselves; Kit discovers them through `@wallet-standard/app` and filters by `NEXT_PUBLIC_SOLANA_CLUSTER` (often `solana:localnet` for this desk).
+
+The Anza [wallet-adapter](https://github.com/anza-xyz/wallet-adapter) monorepo powered the older `@solana/wallet-adapter-*` React stack (`WalletProvider`, `@solana/web3.js` `Connection`). That stack is not added here: modern wallets already speak Wallet Standard, a second provider would fight Kit signing, and Solana’s current frontend guidance prefers Kit hooks over classic adapters for new work. No filesystem keypair (`id.json`) is ever loaded as a browser signer.

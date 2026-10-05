@@ -3,6 +3,8 @@
 import { useState } from "react";
 import AiChat1 from "@/components/ai-chat-1";
 import AppSidebar2, { DESK_SIDEBAR_ITEMS } from "@/components/blocks/app-sidebar-2";
+import { DeskAnalytics } from "@/components/blocks/desk-analytics";
+import { DeskBook } from "@/components/blocks/desk-book";
 import { SwapQuote } from "@/components/blocks/swap-quote";
 import { TitanDirectQuote } from "@/components/blocks/titan-direct-quote";
 import { TitanOrders } from "@/components/blocks/titan-orders";
@@ -13,26 +15,6 @@ import { WalletPanel } from "@/components/blocks/wallet-panel";
  * View id for the desk navigation.
  */
 type ViewId = (typeof DESK_SIDEBAR_ITEMS)[number]["id"];
-
-/**
- * Quiet placeholder for desk surfaces that do not have live data yet.
- */
-function DeskPlaceholder({
-  title,
-  body,
-}: {
-  title: string;
-  body: string;
-}) {
-  return (
-    <div className="mx-auto flex w-full max-w-lg flex-col gap-2 p-6 sm:p-8">
-      <h1 className="text-base font-medium tracking-[-0.01em] text-neutral-900 dark:text-neutral-100">
-        {title}
-      </h1>
-      <p className="text-[13px] leading-relaxed text-neutral-500">{body}</p>
-    </div>
-  );
-}
 
 /**
  * TevTrade workspace. Sidebar owns navigation; the header keeps brand and wallet.
@@ -68,15 +50,8 @@ export function Workspace() {
             </>
           ) : null}
           {view === "orders" ? <TitanOrders /> : null}
-          {view === "desk" ? (
-            <DeskPlaceholder title="Desk" body="Positions and fills will land here." />
-          ) : null}
-          {view === "analytics" ? (
-            <DeskPlaceholder
-              title="Analytics"
-              body="Personal P&L and session stats will land here when wired to your book."
-            />
-          ) : null}
+          {view === "desk" ? <DeskBook /> : null}
+          {view === "analytics" ? <DeskAnalytics /> : null}
         </main>
       </div>
     </div>

@@ -17,8 +17,14 @@ function browserRpcUrl(): string {
 
 /**
  * Wallet-backed Solana client for the whole app.
- * The connected wallet fills the payer and identity roles.
- * Transactions are planned as version 1.
+ *
+ * Signing uses Wallet Standard via `@solana/kit-plugin-wallet` (not the classic
+ * Anza `@solana/wallet-adapter-*` React stack). Extensions that implement Wallet
+ * Standard (Phantom, Solflare, Backpack, and others) register themselves; the
+ * plugin discovers them with `@wallet-standard/app` and filters by
+ * {@link SOLANA_CHAIN}. The connected wallet fills the payer and identity roles.
+ * Transactions are planned as version 1. Never load `id.json` or other secrets
+ * into this browser client.
  */
 export const client = createClient()
   .use(walletSigner({ chain: SOLANA_CHAIN }))

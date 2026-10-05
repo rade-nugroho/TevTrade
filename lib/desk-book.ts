@@ -1,4 +1,7 @@
 import {
+  formatAtomAmount,
+  liveTriggerPrice,
+  titanExecutionSchema,
   titanMeBalanceResultSchema,
   titanOrderId,
   titanOrdersListResultSchema,
@@ -7,7 +10,7 @@ import {
   type TitanOrder,
   type TitanOrdersListResult,
 } from "@/lib/titan-dca-public";
-import { formatTokenAmount, mintLabel } from "@/lib/titan-public";
+import { mintLabel, resolveMintDecimals } from "@/lib/titan-public";
 
 /**
  * Partner book fetch outcome for Desk / Analytics.
@@ -15,21 +18,40 @@ import { formatTokenAmount, mintLabel } from "@/lib/titan-public";
 export type DeskBookStatus = "idle" | "loading" | "ready" | "empty" | "unconfigured" | "error";
 
 /**
- * Flattened fill row derived from order executions (or order totals when executions are absent).
+ * Trading rule row returned by `GET /api/desk/rules` (mirrors TypeDB, client-safe).
+ */
+export type DeskTradingRule = {
+  readonly topic: string;
+  readonly stance: string;
+  readonly rationale: string;
+};
+
+/**
+ * Rule-book payload for Analytics.
+ */
+export type DeskRulesResult = {
+  readonly status: "ok" | "unconfigured" | "empty" | "error";
+  readonly summary: string;
+  readonly rules: readonly DeskTradingRule[];
+};
+
+/**
+ * Flattened fill row from `/orders/{id}/executions`, or order-level spent/received fallback.
  */
 export type DeskFill = {
   readonly key: string;
   readonly orderId: string;
   readonly orderType: string;
+  readonly executionType?: string;
+  readonly status?: string;
   readonly amountSpent?: string;
-  readonly amountReceived?: string;
-  readonly inputMint?: string;
-  readonly outputMint?: string;
-  readonly inputDecimals?: number;
-  readonly outputDecimals?: number;
-  readonly txSignature?: string;
-  readonly executedAt?: string;
-  readonly currentTriggerPrice?: string | number;
+  readonly amountReceived?: string | null;
+  readonly inputMint: string;
+  readonly outputMint: string;
+  readonly txSignature?: string | null;
+  readonly executedAt?: string | null;
+  readonly price?: string;
+  readonly priceDecimals?: number;
 };
 
 /**
@@ -41,14 +63,14 @@ type PartnerErrorBody = {
 };
 
 /**
- * Loads partner orders for a Titan sub.
+ * Loads partner orders for a Titan sub (`GET /api/titan/me/orders`).
  */
 export async function fetchDeskOrders(sub: string, signal?: AbortSignal): Promise<{
   readonly status: DeskBookStatus;
   readonly orders: readonly TitanOrder[];
   readonly message?: string;
 }> {
-  const response = await fetch(`/api/titan/orders?sub=${encodeURIComponent(sub)}`, {
+  const response = await fetch(`/api/titan/me/orders?sub=${encodeURIComponent(sub)}`, {
     signal,
     cache: "no-store",
   });
@@ -72,7 +94,11 @@ export async function fetchDeskOrders(sub: string, signal?: AbortSignal): Promis
   }
   const parsed = titanOrdersListResultSchema.safeParse(payload);
   if (!parsed.success) {
-    return { status: "error", orders: [], message: "Orders response did not match the Order & Execution Schema." };
+    return {
+      status: "error",
+      orders: [],
+      message: "Orders response did not match the Order & Execution Schema.",
+    };
   }
   if (parsed.data.orders.length === 0) {
     return { status: "empty", orders: [] };
@@ -112,83 +138,120 @@ export async function fetchDeskBalance(sub: string, signal?: AbortSignal): Promi
   }
   const parsed = titanMeBalanceResultSchema.safeParse(payload);
   if (!parsed.success) {
-    return { status: "error", balance: null, message: "Balance response did not match the Order & Execution Schema." };
+    return {
+      status: "error",
+      balance: null,
+      message: "Balance response did not match the Order & Execution Schema.",
+    };
   }
-  const hasRoot = parsed.data.availableToWithdraw !== undefined;
-  const hasLines = (parsed.data.balances?.length ?? 0) > 0;
-  if (!hasRoot && !hasLines) {
+  if (parsed.data.balances.length === 0) {
     return { status: "empty", balance: parsed.data };
   }
   return { status: "ready", balance: parsed.data };
 }
 
 /**
- * Collects fills from order executions, falling back to order-level spent/received when needed.
+ * Loads executions for one order (`GET /api/titan/orders/:id/executions`).
  */
-export function collectDeskFills(orders: readonly TitanOrder[]): readonly DeskFill[] {
-  const fills: DeskFill[] = [];
-  for (const order of orders) {
-    const orderId = titanOrderId(order);
-    const executions = order.executions ?? [];
-    if (executions.length > 0) {
-      executions.forEach((execution, index) => {
-        fills.push(executionToFill(order, orderId, execution, index));
-      });
-      continue;
-    }
-    if (order.amountSpent !== undefined || order.amountReceived !== undefined) {
-      fills.push({
-        key: `${orderId}:totals`,
-        orderId,
-        orderType: String(order.orderType),
-        amountSpent: order.amountSpent,
-        amountReceived: order.amountReceived,
-        inputMint: order.inputMint,
-        outputMint: order.outputMint,
-        inputDecimals: order.inputDecimals,
-        outputDecimals: order.outputDecimals,
-        currentTriggerPrice: order.currentTriggerPrice,
-      });
-    }
-  }
-  return fills;
+export async function fetchOrderExecutions(
+  sub: string,
+  orderId: string,
+  signal?: AbortSignal,
+): Promise<readonly TitanExecution[]> {
+  const response = await fetch(
+    `/api/titan/orders/${encodeURIComponent(orderId)}/executions?sub=${encodeURIComponent(sub)}`,
+    { signal, cache: "no-store" },
+  );
+  if (!response.ok) return [];
+  const payload = (await response.json()) as unknown;
+  if (!Array.isArray(payload)) return [];
+  return payload.flatMap((row) => {
+    const parsed = titanExecutionSchema.safeParse(row);
+    return parsed.success ? [parsed.data] : [];
+  });
 }
 
 /**
- * Formats an order amount with mint decimals when known.
+ * Loads fills for many orders (bounded concurrency). Falls back to order totals when empty.
  */
-export function formatOrderAmount(
-  units: string | undefined,
-  mint: string | undefined,
-  decimals: number | undefined,
-): string {
-  return formatTokenAmount(units, { mint, decimals });
+export async function fetchDeskFills(
+  sub: string,
+  orders: readonly TitanOrder[],
+  signal?: AbortSignal,
+): Promise<readonly DeskFill[]> {
+  const batches = await Promise.all(
+    orders.map(async (order) => {
+      const executions = await fetchOrderExecutions(sub, order.id, signal);
+      if (executions.length > 0) {
+        return executions.map((execution) => executionToFill(order, execution));
+      }
+      if (order.amountSpent !== undefined || order.amountReceived != null) {
+        return [orderTotalsFill(order)];
+      }
+      return [] as DeskFill[];
+    }),
+  );
+  return batches.flat();
+}
+
+/**
+ * Sync fill rows from order totals when executions are not loaded yet.
+ * Prefer `fetchDeskFills` when the desk can call the executions proxy.
+ */
+export function collectDeskFills(orders: readonly TitanOrder[]): readonly DeskFill[] {
+  return orders.flatMap((order) => {
+    if (order.amountSpent !== undefined || order.amountReceived != null) {
+      return [orderTotalsFill(order)];
+    }
+    return [];
+  });
+}
+
+/**
+ * Formats an order/mint atom amount when decimals are known.
+ */
+export function formatOrderAmount(units: string | null | undefined, mint: string): string {
+  if (units == null) return "—";
+  const scale = resolveMintDecimals(mint, undefined);
+  if (scale === null) return units;
+  const label = mintLabel(mint);
+  const display = formatAtomAmount(units, scale);
+  return label === "—" ? display : `${display} ${label}`;
 }
 
 /**
  * Formats DCA cycle progress when present.
  */
 export function formatCycles(order: TitanOrder): string | null {
-  const completed = order.cyclesCompleted ?? order.cycles;
-  if (completed === undefined && order.totalCycles === undefined) return null;
-  const done = completed === undefined ? "?" : String(completed);
-  const total = order.totalCycles === undefined ? "?" : String(order.totalCycles);
-  return `${done} / ${total}`;
+  if (order.orderType !== "dca") return null;
+  if (order.cyclesCompleted === undefined || order.totalCycles === undefined) return null;
+  return `${order.cyclesCompleted} / ${order.totalCycles}`;
+}
+
+/**
+ * Formats live trigger price with priceDecimals when available.
+ */
+export function formatTrigger(order: TitanOrder): string | null {
+  const price = liveTriggerPrice(order);
+  if (!price) return null;
+  const decimals = order.priceDecimals;
+  if (typeof decimals === "number") {
+    return formatAtomAmount(price, decimals);
+  }
+  return price;
 }
 
 /**
  * Short spent → received line for a fill or order.
  */
 export function formatSpendReceive(row: {
-  readonly amountSpent?: string;
-  readonly amountReceived?: string;
-  readonly inputMint?: string;
-  readonly outputMint?: string;
-  readonly inputDecimals?: number;
-  readonly outputDecimals?: number;
+  readonly amountSpent?: string | null;
+  readonly amountReceived?: string | null;
+  readonly inputMint: string;
+  readonly outputMint: string;
 }): string {
-  const spent = formatOrderAmount(row.amountSpent, row.inputMint, row.inputDecimals);
-  const received = formatOrderAmount(row.amountReceived, row.outputMint, row.outputDecimals);
+  const spent = formatOrderAmount(row.amountSpent ?? undefined, row.inputMint);
+  const received = formatOrderAmount(row.amountReceived ?? undefined, row.outputMint);
   if (spent === "—" && received === "—") return "—";
   return `${spent} → ${received}`;
 }
@@ -200,84 +263,87 @@ export function summarizeSession(orders: readonly TitanOrder[]): {
   readonly total: number;
   readonly byStatus: Readonly<Record<string, number>>;
   readonly byType: Readonly<Record<string, number>>;
-  readonly fillCount: number;
   readonly dcaWithCycles: number;
   readonly trailingWithTrigger: number;
 } {
   const byStatus: Record<string, number> = {};
   const byType: Record<string, number> = {};
-  let fillCount = 0;
   let dcaWithCycles = 0;
   let trailingWithTrigger = 0;
 
   for (const order of orders) {
-    const status = order.status || "unknown";
-    const type = String(order.orderType || "unknown");
-    byStatus[status] = (byStatus[status] ?? 0) + 1;
-    byType[type] = (byType[type] ?? 0) + 1;
-    fillCount += order.executions?.length ?? 0;
-    if (type === "dca" && formatCycles(order)) dcaWithCycles += 1;
-    if (order.currentTriggerPrice !== undefined) trailingWithTrigger += 1;
+    byStatus[order.status] = (byStatus[order.status] ?? 0) + 1;
+    byType[order.orderType] = (byType[order.orderType] ?? 0) + 1;
+    if (formatCycles(order)) dcaWithCycles += 1;
+    if (order.currentTriggerPrice || order.trailingStopBps) trailingWithTrigger += 1;
   }
 
   return {
     total: orders.length,
     byStatus,
     byType,
-    fillCount,
     dcaWithCycles,
     trailingWithTrigger,
   };
 }
 
 /**
- * Maps one execution onto a desk fill row.
+ * Formats balance lines emphasizing availableToWithdraw.
  */
-function executionToFill(
-  order: TitanOrder,
-  orderId: string,
-  execution: TitanExecution,
-  index: number,
-): DeskFill {
+export function formatBalanceLines(balance: TitanMeBalanceResult): readonly {
+  readonly key: string;
+  readonly available: string;
+  readonly total: string;
+  readonly locked: string;
+  readonly pending: string;
+}[] {
+  return balance.balances.map((row) => {
+    const symbol = row.symbol?.trim() || mintLabel(row.mint);
+    const tag = symbol === "—" ? "" : ` ${symbol}`;
+    return {
+      key: `${row.mint}:${row.programId}`,
+      available: `${formatAtomAmount(row.availableToWithdraw, row.decimals)}${tag}`,
+      total: `${formatAtomAmount(row.totalBalance, row.decimals)}${tag}`,
+      locked: `${formatAtomAmount(row.lockedForFutureTxns, row.decimals)}${tag}`,
+      pending: `${formatAtomAmount(row.withdrawalPending, row.decimals)}${tag}`,
+    };
+  });
+}
+
+/**
+ * Maps one execution onto a desk fill row using the parent order mints.
+ */
+function executionToFill(order: TitanOrder, execution: TitanExecution): DeskFill {
   return {
-    key: execution.id ?? `${orderId}:exec:${index}`,
-    orderId,
-    orderType: String(order.orderType),
-    amountSpent: execution.amountSpent ?? order.amountSpent,
-    amountReceived: execution.amountReceived ?? order.amountReceived,
-    inputMint: execution.inputMint ?? order.inputMint,
-    outputMint: execution.outputMint ?? order.outputMint,
-    inputDecimals: execution.inputDecimals ?? order.inputDecimals,
-    outputDecimals: execution.outputDecimals ?? order.outputDecimals,
+    key: execution.id,
+    orderId: order.id,
+    orderType: order.orderType,
+    executionType: execution.executionType,
+    status: execution.status,
+    amountSpent: execution.inputAmount,
+    amountReceived: execution.outputAmount,
+    inputMint: order.inputMint,
+    outputMint: order.outputMint,
     txSignature: execution.txSignature,
     executedAt: execution.executedAt,
-    currentTriggerPrice: order.currentTriggerPrice,
+    price: execution.price,
+    priceDecimals: execution.priceDecimals,
   };
 }
 
 /**
- * Formats balance lines for withdrawable partner funds.
+ * Order-level spent/received when the executions list is empty or unavailable.
  */
-export function formatBalanceLines(balance: TitanMeBalanceResult): readonly string[] {
-  const lines: string[] = [];
-  if (balance.availableToWithdraw !== undefined) {
-    lines.push(
-      formatTokenAmount(balance.availableToWithdraw, {
-        mint: balance.mint,
-        decimals: balance.decimals,
-        symbol: mintLabel(balance.mint) === "—" ? undefined : mintLabel(balance.mint),
-      }),
-    );
-  }
-  for (const row of balance.balances ?? []) {
-    if (row.availableToWithdraw === undefined) continue;
-    lines.push(
-      formatTokenAmount(row.availableToWithdraw, {
-        mint: row.mint,
-        decimals: row.decimals,
-        symbol: mintLabel(row.mint) === "—" ? undefined : mintLabel(row.mint),
-      }),
-    );
-  }
-  return lines;
+function orderTotalsFill(order: TitanOrder): DeskFill {
+  return {
+    key: `${titanOrderId(order)}:totals`,
+    orderId: order.id,
+    orderType: order.orderType,
+    amountSpent: order.amountSpent,
+    amountReceived: order.amountReceived,
+    inputMint: order.inputMint,
+    outputMint: order.outputMint,
+    txSignature: order.lastExecutionTxHash,
+    executedAt: order.lastExecutionAt,
+  };
 }

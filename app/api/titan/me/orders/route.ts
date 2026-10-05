@@ -1,4 +1,4 @@
-import { listMeOrders, partnerErrorResponse } from "@/lib/titan-dca";
+import { listOrders, partnerErrorResponse } from "@/lib/titan-dca";
 import { titanSubSchema } from "@/lib/titan-dca-public";
 
 export const dynamic = "force-dynamic";
@@ -14,7 +14,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const orders = await listMeOrders(
+    const result = await listOrders(
       subResult.data,
       {
         status: url.searchParams.get("status") ?? undefined,
@@ -22,7 +22,7 @@ export async function GET(request: Request) {
       },
       request.signal,
     );
-    return Response.json(orders);
+    return Response.json(result);
   } catch (error) {
     return partnerErrorResponse(error);
   }

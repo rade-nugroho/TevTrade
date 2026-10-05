@@ -25,7 +25,7 @@ export type AutomationTrack = z.infer<typeof automationTrackSchema>;
 
 /**
  * Workflow phases for the Trade Automation desk.
- * Spot track stops at `approved` (sign stubbed).
+ * Spot track continues through Wallet Standard sign + send after explicit approve.
  * Order track continues through Wallet Standard sign + partner confirm after explicit approve.
  */
 export const automationPhaseSchema = z.enum([
@@ -37,8 +37,10 @@ export const automationPhaseSchema = z.enum([
   "intenting",
   "awaiting_approval",
   "signing",
+  "executing",
   "confirming",
   "confirmed",
+  "executed",
   "approved",
   "rejected",
   "error",

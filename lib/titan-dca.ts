@@ -24,6 +24,7 @@ import {
   type TitanOrdersListResult,
   type TitanPartnerError,
 } from "@/lib/titan-dca-public";
+import { titanExecutionSchema } from "@/lib/titan-order-schema";
 
 const SIWS_MAX_BYTES = 1024;
 const SIWS_SKEW_MS = 10 * 60 * 1000;
@@ -485,13 +486,20 @@ export async function getOrderDeposit(
 }
 
 /**
- * Lists partner orders for a user (`GET /orders`).
+ * Lists the user's orders (`GET /me/orders`).
  * Amounts stay as integer strings; the UI formats with mint decimals.
  */
-export async function listOrders(sub: string, signal?: AbortSignal): Promise<TitanOrdersListResult> {
+export async function listOrders(
+  sub: string,
+  filters: { readonly status?: string; readonly type?: string } = {},
+  signal?: AbortSignal,
+): Promise<TitanOrdersListResult> {
   const parsedSub = titanSubSchema.parse(sub);
   const { baseUrl, apiKey } = requireDcaEnv();
-  const payload = await callTitanDca("/orders", {
+  const url = new URL("/me/orders", "http://titan.invalid");
+  if (filters.status) url.searchParams.set("status", filters.status);
+  if (filters.type) url.searchParams.set("type", filters.type);
+  const payload = await callTitanDca(`${url.pathname}${url.search}`, {
     method: "GET",
     baseUrl,
     apiKey,
@@ -511,12 +519,30 @@ export async function listOrders(sub: string, signal?: AbortSignal): Promise<Tit
 }
 
 /**
+ * Alias for desk callers that prefer the `/me/orders` name.
+ */
+export async function listMeOrders(
+  sub: string,
+  filters: { readonly status?: string; readonly type?: string } = {},
+  signal?: AbortSignal,
+): Promise<TitanOrdersListResult> {
+  return listOrders(sub, filters, signal);
+}
+
+/**
  * Reads partner withdrawable balances (`GET /me/balance`).
  */
-export async function getMeBalance(sub: string, signal?: AbortSignal): Promise<TitanMeBalanceResult> {
+export async function getMeBalance(
+  sub: string,
+  hideZeroOrSignal?: boolean | AbortSignal,
+  maybeSignal?: AbortSignal,
+): Promise<TitanMeBalanceResult> {
+  const hideZero = typeof hideZeroOrSignal === "boolean" ? hideZeroOrSignal : false;
+  const signal = typeof hideZeroOrSignal === "boolean" ? maybeSignal : hideZeroOrSignal;
   const parsedSub = titanSubSchema.parse(sub);
   const { baseUrl, apiKey } = requireDcaEnv();
-  const payload = await callTitanDca("/me/balance", {
+  const path = `/me/balance?hideZero=${hideZero ? "true" : "false"}`;
+  const payload = await callTitanDca(path, {
     method: "GET",
     baseUrl,
     apiKey,
@@ -524,7 +550,7 @@ export async function getMeBalance(sub: string, signal?: AbortSignal): Promise<T
     signal,
   });
   const data = unwrapData(payload);
-  const result = titanMeBalanceResultSchema.safeParse(data ?? {});
+  const result = titanMeBalanceResultSchema.safeParse(data);
   if (!result.success) {
     throw new TitanPartnerApiError({
       status: 502,
@@ -533,6 +559,37 @@ export async function getMeBalance(sub: string, signal?: AbortSignal): Promise<T
     });
   }
   return result.data;
+}
+
+/**
+ * Lists executions for one order (`GET /orders/{id}/executions`).
+ */
+export async function listOrderExecutions(
+  sub: string,
+  orderId: string,
+  signal?: AbortSignal,
+) {
+  const parsedSub = titanSubSchema.parse(sub);
+  const { baseUrl, apiKey } = requireDcaEnv();
+  const payload = await callTitanDca(`/orders/${encodeURIComponent(orderId)}/executions`, {
+    method: "GET",
+    baseUrl,
+    apiKey,
+    sub: parsedSub,
+    signal,
+  });
+  const data = unwrapData(payload);
+  if (!Array.isArray(data)) {
+    throw new TitanPartnerApiError({
+      status: 502,
+      code: "TITAN_ERROR",
+      message: "Titan executions response was not an array.",
+    });
+  }
+  return data.flatMap((row) => {
+    const parsed = titanExecutionSchema.safeParse(row);
+    return parsed.success ? [parsed.data] : [];
+  });
 }
 
 /**

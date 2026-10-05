@@ -8,6 +8,7 @@ import {
   toSmallestUnits,
   type TitanQuoteRoute,
   type TitanQuoteView,
+  type TitanSwapExecution,
 } from "@/lib/titan-public";
 
 export { formatUnits, toSmallestUnits };
@@ -25,6 +26,8 @@ export const titanQuoteRequestSchema = z.object({
   inputDecimals: z.number().int().min(0).max(18),
   userPublicKey: addressSchema,
   slippageBps: z.number().int().min(1).max(10_000).optional(),
+  /** When true, DART instruction bytes and lookup tables are returned for signing. */
+  includeInstructions: z.boolean().optional(),
 });
 
 /**
@@ -184,24 +187,43 @@ export function toQuoteView(payload: unknown, fallbackInputDecimals: number): Ti
   };
 }
 
+const dartInstructionAccountSchema = z.object({
+  pubkey: addressSchema,
+  isSigner: z.boolean(),
+  isWritable: z.boolean(),
+});
+
+const dartInstructionSchema = z.object({
+  programId: addressSchema,
+  accounts: z.array(dartInstructionAccountSchema),
+  data: z.string(),
+});
+
 /**
  * DART `/swap` response fields used for display.
- * `instructions` and `addressLookupTables` are intentionally omitted.
+ * `instructions` and `addressLookupTables` are only forwarded to the browser
+ * when the request sets `includeInstructions`.
  */
 const dartSwapSchema = z.object({
   inputAmount: z.union([z.string(), z.number()]),
   outputAmount: z.union([z.string(), z.number()]),
   provider: z.string().optional(),
   slippageBps: z.number().optional(),
+  instructions: z.array(dartInstructionSchema).optional(),
+  addressLookupTables: z.array(addressSchema).optional(),
 });
 
 /**
  * Maps a DART swap payload to the desk quote view.
- * Instruction bytes and lookup tables never leave the server.
+ * Instruction bytes and lookup tables are attached as `execution` only
+ * when `includeInstructions` was set on the request.
  */
 export function toDartQuoteView(
   payload: unknown,
-  request: Pick<TitanQuoteRequest, "inputMint" | "outputMint" | "inputDecimals">,
+  request: Pick<
+    TitanQuoteRequest,
+    "inputMint" | "outputMint" | "inputDecimals" | "includeInstructions"
+  >,
 ): TitanQuoteView {
   const parsed = dartSwapSchema.safeParse(payload);
   if (!parsed.success) {
@@ -218,9 +240,18 @@ export function toDartQuoteView(
   const outputDecimals = decimalsFor(request.outputMint, 0);
   const provider = readLabel(parsed.data.provider, "Titan-DART");
 
+  const execution: TitanSwapExecution | undefined =
+    request.includeInstructions && parsed.data.instructions?.length
+      ? {
+          instructions: parsed.data.instructions,
+          addressLookupTables: parsed.data.addressLookupTables ?? [],
+        }
+      : undefined;
+
   return {
     id: null,
     source: "dart",
+    execution,
     inputMint: request.inputMint,
     outputMint: request.outputMint,
     inputDecimals,
@@ -245,7 +276,8 @@ export function toDartQuoteView(
 
 /**
  * Asks the free public (or partner) DART endpoint for a single-route quote.
- * Never sends `TITAN_API_KEY`. Strips instructions before returning.
+ * Never sends `TITAN_API_KEY`. Instructions only leave the server when
+ * `includeInstructions` was set on the request.
  */
 async function requestDartQuote(
   request: TitanQuoteRequest,
@@ -345,7 +377,8 @@ async function requestPortalQuote(
  * Asks Titan for a swap quote and returns the display view.
  * Defaults to public DART (`https://api.titan.exchange/dart`). Set
  * `TITAN_QUOTE_SOURCE=portal` to use the Developers Portal key instead.
- * Keys are never mixed across surfaces. Instruction bytes are stripped.
+ * Keys are never mixed across surfaces. Portal quotes never carry
+ * `execution`; only DART produces signable instructions.
  */
 export async function requestTitanQuote(
   request: TitanQuoteRequest,

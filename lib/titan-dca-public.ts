@@ -1,7 +1,5 @@
 import { z } from "zod";
 import {
-  titanBalanceRowSchema,
-  titanExecutionSchema,
   titanMeBalanceSchema,
   titanOrderSchema,
   titanOrderTypeSchema,
@@ -317,6 +315,3 @@ export function writeTitanSession(session: TitanSession): void {
 export function buildOrderIdempotencyKey(orderType: TitanOrderType, attemptId: string): string {
   return `${orderType}:create:${attemptId}:v1`;
 }
-
-void titanBalanceRowSchema;
-void titanExecutionSchema;

@@ -7,16 +7,24 @@ import { useClient, useRequest } from "@solana/react";
 import { DeskEmpty, DeskField, DeskSection } from "@/components/blocks/desk-section";
 import type { AppClient } from "@/lib/client";
 import {
-  collectDeskFills,
   fetchDeskBalance,
+  fetchDeskFills,
   fetchDeskOrders,
   formatBalanceLines,
   formatCycles,
   formatOrderAmount,
   formatSpendReceive,
+  formatTrigger,
   type DeskBookStatus,
+  type DeskFill,
 } from "@/lib/desk-book";
-import { titanOrderId, titanSubFromWallet, type TitanMeBalanceResult, type TitanOrder } from "@/lib/titan-dca-public";
+import {
+  formatAtomAmount,
+  titanOrderId,
+  titanSubFromWallet,
+  type TitanMeBalanceResult,
+  type TitanOrder,
+} from "@/lib/titan-dca-public";
 import { mintLabel } from "@/lib/titan-public";
 import { formatSol, readLamports, SOLANA_CHAIN, solanaClusterLabel } from "@/lib/solana-cluster";
 
@@ -31,15 +39,18 @@ type RpcStatus = {
 
 /**
  * Personal desk book: wallet balance, partner positions, fills, withdrawable.
- * Amounts use Order & Execution Schema integer strings + mint decimals.
+ * Amounts follow Order & Execution Schema (integer strings + mint decimals).
  */
 export function DeskBook() {
   const client = useClient<AppClient>();
   const connected = useConnectedWallet(client);
   const [rpcStatus, setRpcStatus] = useState<RpcStatus | null>(null);
+  const [rpcReady, setRpcReady] = useState(false);
   const [orders, setOrders] = useState<readonly TitanOrder[]>([]);
   const [ordersStatus, setOrdersStatus] = useState<DeskBookStatus>("idle");
   const [ordersMessage, setOrdersMessage] = useState<string | undefined>();
+  const [fills, setFills] = useState<readonly DeskFill[]>([]);
+  const [fillsLoading, setFillsLoading] = useState(false);
   const [balance, setBalance] = useState<TitanMeBalanceResult | null>(null);
   const [balanceStatus, setBalanceStatus] = useState<DeskBookStatus>("idle");
   const [balanceMessage, setBalanceMessage] = useState<string | undefined>();
@@ -67,10 +78,15 @@ export function DeskBook() {
     void fetch("/api/rpc")
       .then((response) => response.json())
       .then((payload: RpcStatus) => {
-        if (!cancelled && payload?.clusterLabel && payload.provider) setRpcStatus(payload);
+        if (cancelled) return;
+        if (payload?.clusterLabel && payload.provider) setRpcStatus(payload);
+        setRpcReady(true);
       })
       .catch(() => {
-        if (!cancelled) setRpcStatus(null);
+        if (!cancelled) {
+          setRpcStatus(null);
+          setRpcReady(true);
+        }
       });
     return () => {
       cancelled = true;
@@ -82,6 +98,7 @@ export function DeskBook() {
       setOrders([]);
       setOrdersStatus("idle");
       setOrdersMessage(undefined);
+      setFills([]);
       setBalance(null);
       setBalanceStatus("idle");
       setBalanceMessage(undefined);
@@ -90,10 +107,10 @@ export function DeskBook() {
 
     setOrdersStatus("loading");
     setBalanceStatus("loading");
-    const controller = new AbortController();
+    setFillsLoading(true);
     const [ordersResult, balanceResult] = await Promise.all([
-      fetchDeskOrders(sub, controller.signal),
-      fetchDeskBalance(sub, controller.signal),
+      fetchDeskOrders(sub),
+      fetchDeskBalance(sub),
     ]);
     setOrders(ordersResult.orders);
     setOrdersStatus(ordersResult.status);
@@ -101,13 +118,20 @@ export function DeskBook() {
     setBalance(balanceResult.balance);
     setBalanceStatus(balanceResult.status);
     setBalanceMessage(balanceResult.message);
+
+    if (ordersResult.status === "ready" && ordersResult.orders.length > 0) {
+      const nextFills = await fetchDeskFills(sub, ordersResult.orders);
+      setFills(nextFills);
+    } else {
+      setFills([]);
+    }
+    setFillsLoading(false);
   }, [sub]);
 
   useEffect(() => {
     void refreshBook();
   }, [refreshBook]);
 
-  const fills = useMemo(() => collectDeskFills(orders), [orders]);
   const providerLabel =
     rpcStatus?.provider === "helius"
       ? "Helius"
@@ -139,7 +163,9 @@ export function DeskBook() {
       </header>
 
       <DeskSection title="Wallet" description="Connected wallet or read-only DESK_WALLET_ADDRESS.">
-        {!walletAddress ? (
+        {!rpcReady ? (
+          <DeskEmpty>Loading wallet…</DeskEmpty>
+        ) : !walletAddress ? (
           <DeskEmpty>Connect a wallet or set DESK_WALLET_ADDRESS to show SOL balance.</DeskEmpty>
         ) : (
           <dl className="flex flex-col gap-2">
@@ -168,9 +194,11 @@ export function DeskBook() {
 
       <DeskSection
         title="Positions"
-        description="Partner orders: orderType, status, spent/received, DCA cycles, trailing trigger."
+        description="orderType, status, amountSpent/amountReceived, DCA cycles, currentTriggerPrice."
       >
-        {!sub ? (
+        {!rpcReady ? (
+          <DeskEmpty>Loading positions…</DeskEmpty>
+        ) : !sub ? (
           <DeskEmpty>Connect a wallet to load positions for your Titan sub.</DeskEmpty>
         ) : ordersStatus === "loading" ? (
           <DeskEmpty>Loading positions…</DeskEmpty>
@@ -185,55 +213,53 @@ export function DeskBook() {
           <DeskEmpty>No open or historical positions yet. Place one from Orders when ready.</DeskEmpty>
         ) : (
           <ul className="flex flex-col gap-3" role="list">
-            {orders.map((order) => (
-              <li
-                key={titanOrderId(order)}
-                className="rounded-[var(--rb-r-md,8px)] border border-neutral-200/80 px-3 py-3 dark:border-neutral-800"
-              >
-                <div className="flex items-baseline justify-between gap-2">
-                  <p className="text-[13px] font-medium text-neutral-900 dark:text-neutral-100">
-                    {String(order.orderType)}
-                  </p>
-                  <p className="font-mono text-[11px] text-neutral-500">{order.status}</p>
-                </div>
-                <dl className="mt-2 flex flex-col gap-1.5">
-                  <DeskField label="Pair" value={`${mintLabel(order.inputMint)} → ${mintLabel(order.outputMint)}`} />
-                  <DeskField label="Spent / received" mono value={formatSpendReceive(order)} />
-                  {formatCycles(order) ? (
-                    <DeskField label="Cycles" mono value={formatCycles(order) ?? "—"} />
-                  ) : null}
-                  {order.currentTriggerPrice !== undefined ? (
+            {orders.map((order) => {
+              const cycles = formatCycles(order);
+              const trigger = formatTrigger(order);
+              return (
+                <li
+                  key={titanOrderId(order)}
+                  className="rounded-[var(--rb-r-md,8px)] border border-neutral-200/80 px-3 py-3 dark:border-neutral-800"
+                >
+                  <div className="flex items-baseline justify-between gap-2">
+                    <p className="text-[13px] font-medium text-neutral-900 dark:text-neutral-100">
+                      {order.orderType}
+                    </p>
+                    <p className="font-mono text-[11px] text-neutral-500">{order.status}</p>
+                  </div>
+                  <dl className="mt-2 flex flex-col gap-1.5">
                     <DeskField
-                      label="Trigger"
-                      mono
-                      value={String(order.currentTriggerPrice)}
+                      label="Pair"
+                      value={`${mintLabel(order.inputMint)} → ${mintLabel(order.outputMint)}`}
                     />
-                  ) : null}
-                  {order.availableToWithdraw !== undefined ? (
-                    <DeskField
-                      label="Withdraw"
-                      mono
-                      value={formatOrderAmount(
-                        order.availableToWithdraw,
-                        order.inputMint,
-                        order.inputDecimals,
-                      )}
-                    />
-                  ) : null}
-                  <DeskField label="Id" mono value={titanOrderId(order)} />
-                </dl>
-              </li>
-            ))}
+                    <DeskField label="Spent / received" mono value={formatSpendReceive(order)} />
+                    {order.totalAmount ? (
+                      <DeskField
+                        label="Total"
+                        mono
+                        value={formatOrderAmount(order.totalAmount, order.inputMint)}
+                      />
+                    ) : null}
+                    {cycles ? <DeskField label="Cycles" mono value={cycles} /> : null}
+                    {trigger ? <DeskField label="Trigger" mono value={trigger} /> : null}
+                    <DeskField label="Withdraw" value={order.withdrawalStatus} />
+                    <DeskField label="Id" mono value={order.id} />
+                  </dl>
+                </li>
+              );
+            })}
           </ul>
         )}
       </DeskSection>
 
-      <DeskSection title="Fills" description="Executions list from each order when Titan returns them.">
-        {!sub ? (
+      <DeskSection title="Fills" description="Executions list: inputAmount → outputAmount per cycle/trigger.">
+        {!rpcReady ? (
+          <DeskEmpty>Loading fills…</DeskEmpty>
+        ) : !sub ? (
           <DeskEmpty>Connect a wallet to load fills.</DeskEmpty>
         ) : ordersStatus === "unconfigured" ? (
           <DeskEmpty>Fills stay empty until the partner orders API is configured.</DeskEmpty>
-        ) : ordersStatus === "loading" ? (
+        ) : fillsLoading || ordersStatus === "loading" ? (
           <DeskEmpty>Loading fills…</DeskEmpty>
         ) : fills.length === 0 ? (
           <DeskEmpty>No executions yet. Fills appear after partner orders run cycles.</DeskEmpty>
@@ -245,7 +271,10 @@ export function DeskBook() {
                 className="flex flex-col gap-1 rounded-[var(--rb-r-md,8px)] border border-neutral-200/80 px-3 py-2.5 dark:border-neutral-800"
               >
                 <div className="flex items-baseline justify-between gap-2">
-                  <p className="text-[12px] text-neutral-800 dark:text-neutral-200">{fill.orderType}</p>
+                  <p className="text-[12px] text-neutral-800 dark:text-neutral-200">
+                    {fill.executionType ?? fill.orderType}
+                    {fill.status ? ` · ${fill.status}` : ""}
+                  </p>
                   <p className="font-mono text-[11px] text-neutral-500">
                     {fill.executedAt ?? fill.orderId}
                   </p>
@@ -253,6 +282,11 @@ export function DeskBook() {
                 <p className="font-mono text-[12px] text-neutral-700 dark:text-neutral-300">
                   {formatSpendReceive(fill)}
                 </p>
+                {fill.price && typeof fill.priceDecimals === "number" ? (
+                  <p className="font-mono text-[11px] text-neutral-500">
+                    price {formatAtomAmount(fill.price, fill.priceDecimals)}
+                  </p>
+                ) : null}
                 {fill.txSignature ? (
                   <p className="truncate font-mono text-[11px] text-neutral-500">{fill.txSignature}</p>
                 ) : null}
@@ -264,9 +298,11 @@ export function DeskBook() {
 
       <DeskSection
         title="Withdrawable"
-        description="Partner balance availableToWithdraw for your linked Titan user."
+        description="GET /me/balance → availableToWithdraw per mint (atoms + decimals)."
       >
-        {!sub ? (
+        {!rpcReady ? (
+          <DeskEmpty>Loading balance…</DeskEmpty>
+        ) : !sub ? (
           <DeskEmpty>Connect a wallet to check withdrawable balance.</DeskEmpty>
         ) : balanceStatus === "loading" ? (
           <DeskEmpty>Loading balance…</DeskEmpty>
@@ -280,9 +316,19 @@ export function DeskBook() {
         ) : balanceStatus === "empty" || balanceLines.length === 0 ? (
           <DeskEmpty>No withdrawable partner balance reported yet.</DeskEmpty>
         ) : (
-          <ul className="flex flex-col gap-1.5 font-mono text-[13px] text-neutral-800 dark:text-neutral-200" role="list">
+          <ul className="flex flex-col gap-3" role="list">
             {balanceLines.map((line) => (
-              <li key={line}>{line}</li>
+              <li
+                key={line.key}
+                className="rounded-[var(--rb-r-md,8px)] border border-neutral-200/80 px-3 py-2.5 dark:border-neutral-800"
+              >
+                <dl className="flex flex-col gap-1.5">
+                  <DeskField label="Available" mono value={line.available} />
+                  <DeskField label="Total" mono value={line.total} />
+                  <DeskField label="Locked" mono value={line.locked} />
+                  <DeskField label="Pending out" mono value={line.pending} />
+                </dl>
+              </li>
             ))}
           </ul>
         )}

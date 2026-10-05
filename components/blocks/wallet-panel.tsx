@@ -27,7 +27,10 @@ type RpcStatus = {
 
 /**
  * Connects a Wallet Standard wallet and shows the cluster, provider, and SOL balance.
- * When no extension is connected, shows the public desk address for read-only balance.
+ *
+ * Discovery comes from Kit (`useWallets` / `WalletReadyGate`), not Anza adapter
+ * packages. When no extension is connected, shows the public desk address for a
+ * read-only balance. Signing never loads `id.json` in the browser.
  */
 export function WalletPanel() {
   const client = useClient<AppClient>();
@@ -150,8 +153,14 @@ function WalletControls({ client }: { client: AppClient }) {
         </p>
       )}
       {wallets.length === 0 ? (
-        <p className="text-xs text-neutral-500">
-          {showingDeskOnly ? "Import id.json into Phantom to sign" : "No wallet found"}
+        <p className="max-w-[16rem] text-right text-xs text-neutral-500">
+          {showingDeskOnly
+            ? SOLANA_CHAIN === "solana:localnet"
+              ? "No Wallet Standard extension for localnet. Import the desk keypair into Phantom/Solflare to sign — never load id.json here."
+              : "No Wallet Standard extension found. Import the desk keypair into Phantom/Solflare to sign — never load id.json here."
+            : SOLANA_CHAIN === "solana:localnet"
+              ? "No wallet for solana:localnet. Install Phantom/Solflare (enable test networks) or set DESK_WALLET_ADDRESS for read-only."
+              : "No Wallet Standard wallet found. Install Phantom, Solflare, or another extension."}
         </p>
       ) : (
         wallets.map((wallet) => (

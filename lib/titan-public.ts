@@ -104,14 +104,42 @@ export type TitanQuoteRoute = {
 };
 
 /**
+ * One account meta inside a serialized DART instruction.
+ */
+export type DartInstructionAccount = {
+  readonly pubkey: string;
+  readonly isSigner: boolean;
+  readonly isWritable: boolean;
+};
+
+/**
+ * One DART `/swap` instruction: base58 program and keys, base64 data.
+ */
+export type DartSwapInstruction = {
+  readonly programId: string;
+  readonly accounts: readonly DartInstructionAccount[];
+  readonly data: string;
+};
+
+/**
+ * Transaction-ready payload carried on a DART quote when the caller asks.
+ * Only present for `source: "dart"` responses requested with `includeInstructions`.
+ */
+export type TitanSwapExecution = {
+  readonly instructions: readonly DartSwapInstruction[];
+  readonly addressLookupTables: readonly string[];
+};
+
+/**
  * Which Titan HTTP surface produced the quote.
  * DART is the free public `/dart` API. Portal is Developers Portal Gateway.
  */
 export type TitanQuoteSource = "dart" | "portal";
 
 /**
- * Display quote returned to the browser. It cannot be signed.
- * Instruction bytes and lookup tables are never included.
+ * Display quote returned to the browser.
+ * `execution` is only populated when the request sets `includeInstructions`,
+ * so instruction bytes and lookup tables stay off the wire by default.
  */
 export type TitanQuoteView = {
   readonly id: string | null;
@@ -124,4 +152,5 @@ export type TitanQuoteView = {
   readonly outputPriceUsd: number | null;
   readonly recommendedProvider: string;
   readonly routes: readonly TitanQuoteRoute[];
+  readonly execution?: TitanSwapExecution;
 };

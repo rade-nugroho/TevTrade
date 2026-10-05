@@ -6,15 +6,17 @@ import { useClient } from "@solana/react";
 import { DeskEmpty, DeskField, DeskSection } from "@/components/blocks/desk-section";
 import type { AppClient } from "@/lib/client";
 import {
-  collectDeskFills,
+  fetchDeskFills,
   fetchDeskOrders,
   formatSpendReceive,
   summarizeSession,
   type DeskBookStatus,
+  type DeskFill,
+  type DeskRulesResult,
+  type DeskTradingRule,
 } from "@/lib/desk-book";
 import { titanSubFromWallet, type TitanOrder } from "@/lib/titan-dca-public";
 import { SOLANA_CHAIN, solanaClusterLabel } from "@/lib/solana-cluster";
-import type { TradingRule, TradingRulesResult } from "@/lib/typedb";
 
 /**
  * Public RPC status from `GET /api/rpc`.
@@ -31,12 +33,15 @@ export function DeskAnalytics() {
   const client = useClient<AppClient>();
   const connected = useConnectedWallet(client);
   const [rpcStatus, setRpcStatus] = useState<RpcStatus | null>(null);
+  const [rpcReady, setRpcReady] = useState(false);
   const [deskAddress, setDeskAddress] = useState<string | null>(null);
   const [orders, setOrders] = useState<readonly TitanOrder[]>([]);
   const [ordersStatus, setOrdersStatus] = useState<DeskBookStatus>("idle");
   const [ordersMessage, setOrdersMessage] = useState<string | undefined>();
-  const [rules, setRules] = useState<readonly TradingRule[]>([]);
-  const [rulesStatus, setRulesStatus] = useState<TradingRulesResult["status"] | "loading">("loading");
+  const [fills, setFills] = useState<readonly DeskFill[]>([]);
+  const [fillsLoading, setFillsLoading] = useState(false);
+  const [rules, setRules] = useState<readonly DeskTradingRule[]>([]);
+  const [rulesStatus, setRulesStatus] = useState<DeskRulesResult["status"] | "loading">("loading");
   const [rulesSummary, setRulesSummary] = useState<string>("");
 
   const walletAddress = connected?.account.address ?? deskAddress ?? undefined;
@@ -46,15 +51,17 @@ export function DeskAnalytics() {
     let cancelled = false;
     void fetch("/api/rpc")
       .then((response) => response.json())
-      .then(
-        (payload: RpcStatus & { deskWalletAddress?: string | null }) => {
-          if (cancelled) return;
-          if (payload?.clusterLabel && payload.provider) setRpcStatus(payload);
-          setDeskAddress(payload.deskWalletAddress ?? null);
-        },
-      )
+      .then((payload: RpcStatus & { deskWalletAddress?: string | null }) => {
+        if (cancelled) return;
+        if (payload?.clusterLabel && payload.provider) setRpcStatus(payload);
+        setDeskAddress(payload.deskWalletAddress ?? null);
+        setRpcReady(true);
+      })
       .catch(() => {
-        if (!cancelled) setRpcStatus(null);
+        if (!cancelled) {
+          setRpcStatus(null);
+          setRpcReady(true);
+        }
       });
     return () => {
       cancelled = true;
@@ -66,13 +73,21 @@ export function DeskAnalytics() {
       setOrders([]);
       setOrdersStatus("idle");
       setOrdersMessage(undefined);
+      setFills([]);
       return;
     }
     setOrdersStatus("loading");
+    setFillsLoading(true);
     const result = await fetchDeskOrders(sub);
     setOrders(result.orders);
     setOrdersStatus(result.status);
     setOrdersMessage(result.message);
+    if (result.status === "ready" && result.orders.length > 0) {
+      setFills(await fetchDeskFills(sub, result.orders));
+    } else {
+      setFills([]);
+    }
+    setFillsLoading(false);
   }, [sub]);
 
   useEffect(() => {
@@ -83,7 +98,7 @@ export function DeskAnalytics() {
     let cancelled = false;
     void fetch("/api/desk/rules")
       .then((response) => response.json())
-      .then((payload: TradingRulesResult) => {
+      .then((payload: DeskRulesResult) => {
         if (cancelled) return;
         setRules(payload.rules ?? []);
         setRulesStatus(payload.status);
@@ -102,7 +117,6 @@ export function DeskAnalytics() {
   }, []);
 
   const session = useMemo(() => summarizeSession(orders), [orders]);
-  const fills = useMemo(() => collectDeskFills(orders), [orders]);
   const providerLabel =
     rpcStatus?.provider === "helius"
       ? "Helius"
@@ -113,6 +127,7 @@ export function DeskAnalytics() {
 
   const statusLines = Object.entries(session.byStatus);
   const typeLines = Object.entries(session.byType);
+  const bookReady = ordersStatus === "ready" || ordersStatus === "empty";
 
   return (
     <div className="mx-auto flex w-full max-w-[40rem] flex-col gap-6 p-5 sm:p-8">
@@ -131,45 +146,27 @@ export function DeskAnalytics() {
           <DeskField
             label="Orders"
             mono
-            value={
-              !sub
-                ? "—"
-                : ordersStatus === "loading"
-                  ? "…"
-                  : ordersStatus === "unconfigured" || ordersStatus === "error"
-                    ? "—"
-                    : String(session.total)
-            }
+            value={!sub || !bookReady ? "—" : String(session.total)}
           />
           <DeskField
             label="Fills"
             mono
-            value={
-              !sub || ordersStatus === "unconfigured" || ordersStatus === "error"
-                ? "—"
-                : String(session.fillCount)
-            }
+            value={!sub || !bookReady || fillsLoading ? "—" : String(fills.length)}
           />
           <DeskField
             label="DCA with cycles"
             mono
-            value={
-              !sub || ordersStatus === "unconfigured" || ordersStatus === "error"
-                ? "—"
-                : String(session.dcaWithCycles)
-            }
+            value={!sub || !bookReady ? "—" : String(session.dcaWithCycles)}
           />
           <DeskField
             label="Trailing triggers"
             mono
-            value={
-              !sub || ordersStatus === "unconfigured" || ordersStatus === "error"
-                ? "—"
-                : String(session.trailingWithTrigger)
-            }
+            value={!sub || !bookReady ? "—" : String(session.trailingWithTrigger)}
           />
         </dl>
-        {!sub ? (
+        {!rpcReady ? (
+          <DeskEmpty>Loading session…</DeskEmpty>
+        ) : !sub ? (
           <DeskEmpty>Connect a wallet (or set DESK_WALLET_ADDRESS) to attribute a session book.</DeskEmpty>
         ) : ordersStatus === "unconfigured" ? (
           <DeskEmpty>
@@ -185,18 +182,20 @@ export function DeskAnalytics() {
 
       <DeskSection
         title="Personal P&L"
-        description="Spent → received from Order & Execution amounts. No synthetic net revenue."
+        description="Spent → received from amountSpent/amountReceived or execution inputAmount/outputAmount."
       >
-        {!sub ? (
+        {!rpcReady ? (
+          <DeskEmpty>Loading fills…</DeskEmpty>
+        ) : !sub ? (
           <DeskEmpty>Connect a wallet to attribute fills to your book.</DeskEmpty>
         ) : ordersStatus === "unconfigured" ? (
           <DeskEmpty>P&amp;L stays empty until the partner orders API is configured.</DeskEmpty>
-        ) : ordersStatus === "loading" ? (
+        ) : fillsLoading || ordersStatus === "loading" ? (
           <DeskEmpty>Loading fills…</DeskEmpty>
         ) : fills.length === 0 ? (
           <DeskEmpty>
-            No amountSpent / amountReceived rows yet. When executions land, each fill shows spent →
-            received with mint decimals.
+            No spent/received rows yet. When executions land, each fill shows atoms formatted with mint
+            decimals.
           </DeskEmpty>
         ) : (
           <ul className="flex flex-col gap-2" role="list">
@@ -206,7 +205,9 @@ export function DeskAnalytics() {
                 className="flex flex-col gap-1 rounded-[var(--rb-r-md,8px)] border border-neutral-200/80 px-3 py-2.5 dark:border-neutral-800"
               >
                 <div className="flex items-baseline justify-between gap-2">
-                  <p className="text-[12px] text-neutral-800 dark:text-neutral-200">{fill.orderType}</p>
+                  <p className="text-[12px] text-neutral-800 dark:text-neutral-200">
+                    {fill.executionType ?? fill.orderType}
+                  </p>
                   <p className="font-mono text-[11px] text-neutral-500">
                     {fill.executedAt ?? fill.orderId}
                   </p>

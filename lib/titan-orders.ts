@@ -47,6 +47,8 @@ export {
   createOrderIntent,
   getMeBalance,
   getOrderDeposit,
+  listMeOrders,
+  listOrderExecutions,
   listOrders,
   onboardPartnerUser,
   partnerErrorResponse,
@@ -80,8 +82,10 @@ export const TITAN_SPECIAL_ORDER_PROXIED = [
   "POST /api/titan/onboard → POST /partner/onboard",
   "POST /api/titan/orders/intent → POST /orders/intent",
   "POST /api/titan/orders/confirm → POST /orders/confirm",
-  "GET /api/titan/orders → GET /orders",
+  "GET /api/titan/me/orders → GET /me/orders",
+  "GET /api/titan/orders → GET /me/orders",
   "GET /api/titan/orders/:orderId/deposit → GET /orders/:id/deposit",
+  "GET /api/titan/orders/:orderId/executions → GET /orders/:id/executions",
   "GET /api/titan/me/balance → GET /me/balance",
 ] as const;
 

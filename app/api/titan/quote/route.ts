@@ -5,7 +5,8 @@ export const dynamic = "force-dynamic";
 /**
  * Proxies a Titan swap quote.
  * Defaults to public DART (`api.titan.exchange/dart`). Set `TITAN_QUOTE_SOURCE=portal`
- * for Developers Portal. Secrets stay on the server. Instruction bytes are stripped.
+ * for Developers Portal. Secrets stay on the server. Instruction bytes are
+ * stripped unless the request sets `includeInstructions` (DART only).
  */
 export async function POST(request: Request) {
   let body: unknown;
