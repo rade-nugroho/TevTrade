@@ -25,7 +25,7 @@ const panel =
   "rounded-[var(--rb-r-lg,10px)] border border-neutral-200/70 bg-white dark:border-neutral-800 dark:bg-neutral-900";
 
 const PAD = { top: 10, right: 1, bottom: 20, left: 36 };
-const PLOT_H = 232;
+const PLOT_H = 200;
 
 const clamp = (v: number, min: number, max: number) =>
   Math.min(max, Math.max(min, v));
@@ -189,18 +189,17 @@ export default function Analytics2() {
   };
 
   return (
-    <div className="flex h-full min-h-[640px] w-full flex-col justify-center overflow-y-auto bg-white p-8 sm:p-10 dark:bg-neutral-950">
-      <div className={cx(frame, "mx-auto w-full max-w-[880px] space-y-1")}>
-        <div className={cx(panel, "px-5 py-4")}>
+    <div className={cx(frame, "w-full min-w-0 space-y-1")}>
+      <div className={cx(panel, "px-4 py-4 sm:px-5")}>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className="text-[13px] text-neutral-500">Net revenue</p>
+              <p className="text-[13px] text-neutral-500">Equity</p>
               <div className="mt-1 flex flex-wrap items-baseline gap-2.5">
-                <p className="text-3xl font-medium tabular-nums tracking-[-0.02em] text-neutral-900 dark:text-neutral-100">
+                <p className="text-2xl font-medium tabular-nums tracking-[-0.02em] text-neutral-900 sm:text-3xl dark:text-neutral-100">
                   ${grouped(shown)}
                 </p>
                 {active === null ? (
-                  <p className="text-[13px] tabular-nums">
+                  <p className="text-[13px] tabular-nums text-neutral-500">
                     <span
                       className={
                         delta >= 0
@@ -210,10 +209,8 @@ export default function Analytics2() {
                     >
                       {delta >= 0 ? "+" : "−"}
                       {Math.abs(delta).toFixed(1)}%
-                    </span>{" "}
-                    <span className="text-neutral-500">
-                      over {range === "12M" ? "12 months" : `${range} period`}
                     </span>
+                    <span> · {range}</span>
                   </p>
                 ) : (
                   <p className="text-[13px] text-neutral-500">
@@ -258,7 +255,7 @@ export default function Analytics2() {
             ref={ref}
             role="img"
             tabIndex={0}
-            aria-label={`Net revenue over the last ${range}. Latest ${grouped(latest)} dollars.`}
+            aria-label={`Equity over the last ${range}. Latest ${grouped(latest)} dollars.`}
             onPointerMove={(e) => move(e.clientX)}
             onPointerLeave={() => setActive(null)}
             onBlur={() => setActive(null)}
@@ -419,21 +416,20 @@ export default function Analytics2() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 gap-1 sm:grid-cols-3">
+        <div className="grid grid-cols-3 gap-1">
           {[
-            { label: "Peak", value: peak },
-            { label: "Daily average", value: mean },
-            { label: "Lowest", value: low },
+            { label: "High", value: peak },
+            { label: "Mean", value: mean },
+            { label: "Low", value: low },
           ].map((stat) => (
-            <div key={stat.label} className={cx(panel, "px-4 py-3")}>
+            <div key={stat.label} className={cx(panel, "min-w-0 px-3 py-3 sm:px-4")}>
               <p className="truncate text-xs text-neutral-500">{stat.label}</p>
-              <p className="mt-0.5 text-base font-medium tabular-nums tracking-[-0.01em] text-neutral-900 dark:text-neutral-100">
+              <p className="mt-0.5 truncate text-sm font-medium tabular-nums tracking-[-0.01em] text-neutral-900 sm:text-base dark:text-neutral-100">
                 ${grouped(stat.value)}
               </p>
             </div>
           ))}
         </div>
-      </div>
     </div>
   );
 }

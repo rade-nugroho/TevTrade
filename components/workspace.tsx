@@ -68,10 +68,24 @@ export function Workspace() {
         {view === "desk" ? <Dashboard1 /> : null}
         {view === "ledger" ? <DataTable1 /> : null}
         {view === "analytics" ? (
-          <div className="flex flex-col gap-8 p-4 sm:p-6">
-            <Analytics2 />
-            <Analytics13 />
-            <Analytics14 />
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 p-4 sm:gap-8 sm:p-6">
+            <header className="min-w-0">
+              <h1 className="text-base font-medium tracking-[-0.01em] text-neutral-900 dark:text-neutral-100">
+                Analytics
+              </h1>
+              <p className="mt-0.5 text-[13px] text-neutral-500">
+                Personal desk readouts — equity, session, and book.
+              </p>
+            </header>
+            <section aria-label="Equity" className="min-w-0">
+              <Analytics2 />
+            </section>
+            <section aria-label="Session" className="min-w-0">
+              <Analytics13 />
+            </section>
+            <section aria-label="Book" className="min-w-0">
+              <Analytics14 />
+            </section>
           </div>
         ) : null}
         {view === "operations" ? <AppShell1 /> : null}

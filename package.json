@@ -13,6 +13,7 @@
     "@solana/kit-plugin-rpc": "^0.19.0",
     "@solana/kit-plugin-wallet": "^0.20.0",
     "@solana/react": "^8.4.0",
+    "@titanexchange/sdk-ts": "^0.1.6",
     "clsx": "^2.1.0",
     "d3-shape": "^3.2.0",
     "lucide-react": "^1.52.0",
