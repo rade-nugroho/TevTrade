@@ -2,7 +2,7 @@
 
 TevTrade is a local decision desk. A question goes to Ollama. The answer is grounded in trading rules stored in TypeDB and a SOL balance read through Helius (connected Wallet Standard wallet, or optional public `DESK_WALLET_ADDRESS`).
 
-The browser never receives `HELIUS_API_KEY`, `OLLAMA_API_KEY`, `TYPEDB_TOKEN`, `TITAN_API_KEY`, `TITAN_DART_API_KEY`, `TITAN_DCA_API_KEY`, or `TITAN_JWT`. Wallet signing stays in a Wallet Standard extension. Do not import a filesystem keypair (`id.json`) into the desk. The Quote view asks Titan for a mainnet DART route by default (public `/dart`, 1 req/s) and can use Portal or stream Direct quotes. It does not sign or send the swap. **Trade Automation** runs decision → quote/intent → explicit Approve → Wallet Standard sign/send (spot) or deposit confirm (orders). Spot DART execution is refused on non-mainnet clusters unless you explicitly target the quote chain; there is no fake localnet fill. Orders uses one SIWS signature to link the wallet, then intent → sign deposit → confirm.
+The browser never receives `HELIUS_API_KEY`, `OLLAMA_API_KEY`, `TYPEDB_TOKEN`, `TITAN_API_KEY`, `TITAN_DART_API_KEY`, `TITAN_DCA_API_KEY`, or `TITAN_JWT`. Wallet signing stays in a Wallet Standard extension. Do not import a filesystem keypair (`id.json`) into the desk. The Quote view asks Titan for a mainnet DART route by default (public `/dart`, 1 req/s) and can use Portal or stream Direct quotes. It does not sign or send the swap. **Trade Automation** runs decision → quote/intent → explicit Approve → Wallet Standard sign/send (spot) or deposit confirm (orders). Spot DART execution is refused on non-mainnet clusters unless you explicitly target the quote chain; there is no fake localnet fill. Orders uses one SIWS signature to link the wallet, then intent → sign deposit → confirm. **Bridge** embeds Wormhole Connect for Solana↔EVM transfers (WTT/CCTP); it is disabled on `solana:localnet` and never loads `id.json`.
 
 ## Run
 
@@ -21,7 +21,7 @@ The browser never receives `HELIUS_API_KEY`, `OLLAMA_API_KEY`, `TYPEDB_TOKEN`, `
 
 3. Open [http://localhost:3000](http://localhost:3000).
 
-The Decision view is the chat. **Automation** runs Tev1 + TypeDB stance, then either a DART spot quote (with routes / expectedWinner) or a Special Order intent (`dca`, `stop_loss`, `take_profit`), and always waits for human Approve before any Wallet Standard sign. Quote asks Titan DART by default (or Portal when configured) and can open a Direct quote stream. Orders runs SIWS onboard plus partner intent/confirm. Desk shows wallet SOL, partner positions/fills (`amountSpent` / `amountReceived`, DCA cycles, `currentTriggerPrice`, `availableToWithdraw`) when `TITAN_DCA_*` is set. Analytics shows session counts, personal spent→received fills, and the TypeDB rule book — honest empty states when data is missing.
+The Decision view is the chat. **Automation** runs Tev1 + TypeDB stance, then either a DART spot quote (with routes / expectedWinner) or a Special Order intent (`dca`, `stop_loss`, `take_profit`), and always waits for human Approve before any Wallet Standard sign. Quote asks Titan DART by default (or Portal when configured) and can open a Direct quote stream. Bridge opens Wormhole Connect (Testnet on Solana devnet/testnet, Mainnet on mainnet; gated off on localnet). Orders runs SIWS onboard plus partner intent/confirm. Desk shows wallet SOL, partner positions/fills (`amountSpent` / `amountReceived`, DCA cycles, `currentTriggerPrice`, `availableToWithdraw`) when `TITAN_DCA_*` is set. Analytics shows session counts, personal spent→received fills, and the TypeDB rule book — honest empty states when data is missing.
 
 ### Automation path (enabled when you approve)
 
@@ -59,6 +59,16 @@ Still blocked without partner credentials: live Special Order intent/confirm (`T
 | `TITAN_DCA_API_KEY` | Partner key sent as `X-Titan-Key` from the server only. |
 | `TITAN_ENDPOINT` | Titan Direct WebSocket host only (no `wss://`). |
 | `TITAN_JWT` | Direct auth token for `V1Client.connect`. Never expose to the browser. |
+| `NEXT_PUBLIC_WORMHOLE_NETWORK` | Optional Connect network override: `Testnet` or `Mainnet`. Ignored on localnet (Bridge stays disabled). |
+| `NEXT_PUBLIC_WORMHOLE_RPC_*` | Optional Connect RPCs for Solana / Ethereum / Base / Arbitrum (public URLs). |
+| `NEXT_PUBLIC_WORMHOLE_WALLETCONNECT_PROJECT_ID` | Optional Reown project id for Connect EVM wallets. |
+
+### Bridge (Wormhole Connect)
+
+- **UX** — Sidebar Bridge loads `@wormhole-foundation/wormhole-connect` client-only (`ssr: false`). Default routes are WTT + CCTP for Solana↔EVM USDC/SOL-style transfers. Custom NTT deploy is out of scope.
+- **Network** — Maps `solana:mainnet` → Connect Mainnet, `solana:devnet` / `solana:testnet` → Connect Testnet. On `solana:localnet` the widget is not mounted; set a non-local Solana cluster (or `NEXT_PUBLIC_WORMHOLE_NETWORK` when not on localnet) to enable it.
+- **Signing** — Connect prompts the operator’s browser wallets. Kit + Wallet Standard remain the desk path for Quote/Automation. Never import `id.json`.
+- **Automation Trade** — Spot DART and Special Orders stay on Solana. Bridge is the separate cross-chain funding path.
 
 ### Titan partner flows
 

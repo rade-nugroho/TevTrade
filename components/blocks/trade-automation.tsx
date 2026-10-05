@@ -10,7 +10,7 @@ import {
 import { useClient } from "@solana/react";
 import { useCallback, useMemo, useRef, useState } from "react";
 import type { AppClient } from "@/lib/client";
-import { executeDartSwap } from "@/lib/dart-execution";
+import { executeDartSwap, simulateDartSwap, type DartSimulationResult } from "@/lib/dart-execution";
 import { decisionEventSchema } from "@/lib/decision-schema";
 import {
   canSendDartSwap,
@@ -72,10 +72,14 @@ type AutomationForm = {
   totalCycles: string;
   slippageBps: string;
   triggerPriceUi: string;
+  stopLossPriceUi: string;
+  takeProfitPriceUi: string;
   priceDecimals: string;
   priceBasis: AutomationPriceBasis;
   minOutputUi: string;
   trailingStopBps: string;
+  executionsTotal: string;
+  minGapSeconds: string;
   /** When true, operator explicitly targets mainnet for DART send on a non-mainnet desk. */
   targetQuoteChain: boolean;
   prompt: string;
@@ -95,10 +99,14 @@ const INITIAL_FORM: AutomationForm = {
   totalCycles: "10",
   slippageBps: "50",
   triggerPriceUi: "100",
+  stopLossPriceUi: "90",
+  takeProfitPriceUi: "120",
   priceDecimals: "6",
   priceBasis: "pair",
   minOutputUi: "",
   trailingStopBps: "",
+  executionsTotal: "4",
+  minGapSeconds: "300",
   targetQuoteChain: false,
   prompt:
     "Consider the stated size. Prefer standing aside when size, liquidity, or signing rules are unclear.",
@@ -129,13 +137,26 @@ function buildDecisionPrompt(form: AutomationForm): string {
       ? `Slippage budget: ${form.slippageBps.trim() || "50"} bps.`
       : form.orderType === "dca"
         ? `Cycles: ${form.totalCycles} × ${form.amountPerCycleUi} every ${form.cycleFrequencySeconds}s.`
-        : `Trigger ${form.triggerPriceUi} (${form.priceBasis}, ${form.priceDecimals} decimals).`;
+        : form.orderType === "oco"
+          ? `OCO stop ${form.stopLossPriceUi} / take-profit ${form.takeProfitPriceUi} (${form.priceBasis}, ${form.priceDecimals} decimals).`
+          : form.orderType === "slice"
+            ? `Slice ${form.executionsTotal} chunks, min gap ${form.minGapSeconds}s.`
+            : `Trigger ${form.triggerPriceUi} (${form.priceBasis}, ${form.priceDecimals} decimals).`;
   return [
     form.prompt.trim(),
     trackLine,
     detailLine,
     "This is a recommendation request only. Do not treat the letter as authority to sign.",
   ].join("\n");
+}
+
+/**
+ * Operator-facing step labels for the enabled Automation path.
+ */
+function flowStepLabels(track: AutomationTrack): readonly string[] {
+  return track === "spot"
+    ? ["1 Decision", "2 Quote", "3 Simulate", "4 Approve → sign"]
+    : ["1 Decision", "2 Intent", "3 Approve → sign deposit"];
 }
 
 /**
@@ -263,16 +284,18 @@ export function TradeAutomation() {
    */
   async function requestIntent(address: string, signal: AbortSignal): Promise<TitanOrderIntentResult> {
     if (!automationSupportsOrderType(form.orderType)) {
-      throw new Error(
-        `Automation happy-path does not build ${form.orderType} config yet. Use Orders for raw JSON, or pick dca / stop_loss / take_profit.`,
-      );
+      throw new Error(`Unsupported order type ${form.orderType}.`);
     }
     const config = buildAutomationOrderConfig(form.orderType, form);
     if (!config) {
       throw new Error(
         form.orderType === "dca"
           ? "Check deposit amount, amount per cycle, frequency (≥60s), and cycle count."
-          : "Check deposit amount, trigger price, price decimals (0–18), and optional min-output / trailing bps.",
+          : form.orderType === "oco"
+            ? "Check deposit amount, stop-loss price, take-profit price, and price decimals (0–18)."
+            : form.orderType === "slice"
+              ? "Check deposit amount, executions total (≥2), and min gap seconds (≥0)."
+              : "Check deposit amount, trigger price, price decimals (0–18), and optional min-output / trailing bps.",
       );
     }
     if (!sub) throw new Error("Connect a wallet to create a Special Order intent.");

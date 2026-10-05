@@ -2,6 +2,7 @@ import {
   AccountRole,
   address,
   appendTransactionMessageInstructions,
+  compileTransaction,
   compressTransactionMessageUsingAddressLookupTables,
   createTransactionMessage,
   getAddressDecoder,
@@ -10,6 +11,7 @@ import {
   getBase64EncodedWireTransaction,
   isTransactionSendingSigner,
   pipe,
+  setTransactionMessageFeePayer,
   setTransactionMessageFeePayerSigner,
   setTransactionMessageLifetimeUsingBlockhash,
   signAndSendTransactionMessageWithSigners,
@@ -21,8 +23,26 @@ import {
   type Signature,
   type TransactionSigner,
 } from "@solana/kit";
+import { z } from "zod";
 import type { AppClient } from "@/lib/client";
 import type { DartSwapInstruction, TitanSwapExecution } from "@/lib/titan-public";
+
+/**
+ * Result of an unsigned V0 simulateTransaction for a DART route.
+ * Never signs; used so the operator can review RPC feedback before Approve.
+ */
+export const dartSimulationResultSchema = z.object({
+  ok: z.boolean(),
+  unitsConsumed: z.number().nullable(),
+  logs: z.array(z.string()),
+  err: z.string().nullable(),
+  note: z.string(),
+});
+
+/**
+ * Inferred DART simulation result.
+ */
+export type DartSimulationResult = z.infer<typeof dartSimulationResultSchema>;
 
 /**
  * Size of the address lookup table account header. The stored keys follow it
@@ -81,17 +101,17 @@ async function fetchLookupTableAddresses(
 
 /**
  * Builds the V0 transaction message for a DART route: compute-budget and swap
- * instructions from the quote, the connected wallet as fee payer, a fresh
- * blockhash, and lookup-table compression when the route carries tables.
+ * instructions from the quote, a fee payer, a fresh blockhash, and lookup-table
+ * compression when the route carries tables.
  *
  * @param client - Shared Solana Kit client.
- * @param signer - Connected Wallet Standard signer used as fee payer.
+ * @param feePayer - Connected Wallet Standard signer or a public fee-payer address.
  * @param execution - Instruction payload carried on the approved quote.
- * @returns A transaction message ready for signing.
+ * @returns A transaction message ready for compile / sign.
  */
-async function buildDartMessage(
+export async function buildDartMessage(
   client: AppClient,
-  signer: TransactionSigner,
+  feePayer: TransactionSigner | Address,
   execution: TitanSwapExecution,
 ) {
   const { value: lifetime } = await client.rpc
@@ -99,7 +119,10 @@ async function buildDartMessage(
     .send();
   const planned = pipe(
     createTransactionMessage({ version: 0 }),
-    (draft) => setTransactionMessageFeePayerSigner(signer, draft),
+    (draft) =>
+      typeof feePayer === "string"
+        ? setTransactionMessageFeePayer(feePayer, draft)
+        : setTransactionMessageFeePayerSigner(feePayer, draft),
     (draft) => setTransactionMessageLifetimeUsingBlockhash(lifetime, draft),
     (draft) =>
       appendTransactionMessageInstructions(execution.instructions.map(toKitInstruction), draft),
@@ -113,6 +136,95 @@ async function buildDartMessage(
     }),
   );
   return compressTransactionMessageUsingAddressLookupTables(planned, lookups);
+}
+
+/**
+ * Builds an unsigned V0 transaction for a DART route and simulates it via RPC.
+ * Uses `sigVerify: false` so no Wallet Standard prompt runs.
+ *
+ * Simulation may fail when the desk RPC is not mainnet (DART ALTs live on mainnet).
+ * That failure is surfaced honestly — it is not a fake fill.
+ *
+ * @param client - Shared Solana Kit client whose RPC targets the active cluster.
+ * @param feePayer - Quoting wallet address or connected signer used as fee payer.
+ * @param execution - Instruction payload from the quote.
+ * @returns Structured simulation outcome for the approval panel.
+ */
+export async function simulateDartSwap(
+  client: AppClient,
+  feePayer: TransactionSigner | Address | string,
+  execution: TitanSwapExecution,
+): Promise<DartSimulationResult> {
+  if (execution.instructions.length === 0) {
+    return {
+      ok: false,
+      unitsConsumed: null,
+      logs: [],
+      err: "no_instructions",
+      note: "This quote carries no instructions to simulate.",
+    };
+  }
+
+  try {
+    const payer =
+      typeof feePayer === "string"
+        ? address(feePayer)
+        : "address" in feePayer && typeof feePayer.address === "string"
+          ? feePayer
+          : (feePayer as Address);
+    const message = await buildDartMessage(client, payer, execution);
+    const compiled = compileTransaction(message);
+    const wire = getBase64EncodedWireTransaction(compiled);
+    const { value } = await client.rpc
+      .simulateTransaction(wire, {
+        encoding: "base64",
+        sigVerify: false,
+        replaceRecentBlockhash: true,
+        commitment: "confirmed",
+      })
+      .send();
+
+    const err =
+      value.err === null
+        ? null
+        : typeof value.err === "string"
+          ? value.err
+          : JSON.stringify(value.err);
+    const logs = Array.isArray(value.logs) ? value.logs.filter((line): line is string => typeof line === "string") : [];
+    const unitsConsumed =
+      typeof value.unitsConsumed === "bigint"
+        ? Number(value.unitsConsumed)
+        : typeof value.unitsConsumed === "number"
+          ? value.unitsConsumed
+          : null;
+
+    if (err) {
+      return {
+        ok: false,
+        unitsConsumed,
+        logs: logs.slice(-12),
+        err,
+        note: "Simulation failed on the configured cluster RPC. DART routes expect mainnet accounts; off-cluster desks often fail here until you target the quote chain with a mainnet RPC.",
+      };
+    }
+
+    return {
+      ok: true,
+      unitsConsumed,
+      logs: logs.slice(-12),
+      err: null,
+      note: "Unsigned V0 simulation succeeded (sigVerify=false). Review units/logs, then Approve to sign and send.",
+    };
+  } catch (caught) {
+    const message = caught instanceof Error ? caught.message : "Simulation request failed.";
+    return {
+      ok: false,
+      unitsConsumed: null,
+      logs: [],
+      err: message,
+      note: "Could not simulate on the configured RPC. Approve is still gated; nothing was signed.",
+    };
+  }
 }
 
 /**

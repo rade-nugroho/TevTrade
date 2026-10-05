@@ -11,6 +11,8 @@ import {
   titanOrderDepositResultSchema,
   titanOrderIntentRequestSchema,
   titanOrderIntentResultSchema,
+  titanOrderLifecycleRequestSchema,
+  titanOrderLifecycleResultSchema,
   titanOrdersListResultSchema,
   titanSubSchema,
   type TitanMeBalanceResult,
@@ -21,10 +23,12 @@ import {
   type TitanOrderDepositResult,
   type TitanOrderIntentRequest,
   type TitanOrderIntentResult,
+  type TitanOrderLifecycleAction,
+  type TitanOrderLifecycleResult,
   type TitanOrdersListResult,
   type TitanPartnerError,
 } from "@/lib/titan-dca-public";
-import { titanExecutionSchema } from "@/lib/titan-order-schema";
+import { titanExecutionSchema, titanOrderSchema } from "@/lib/titan-order-schema";
 
 const SIWS_MAX_BYTES = 1024;
 const SIWS_SKEW_MS = 10 * 60 * 1000;
@@ -589,6 +593,94 @@ export async function listOrderExecutions(
   return data.flatMap((row) => {
     const parsed = titanExecutionSchema.safeParse(row);
     return parsed.success ? [parsed.data] : [];
+  });
+}
+
+/**
+ * Maps a lifecycle action to its partner path.
+ *
+ * @param action - pause | resume | cancel | withdraw.
+ * @param orderId - Target order id.
+ * @returns Relative partner path.
+ */
+function lifecyclePath(action: TitanOrderLifecycleAction, orderId: string): string {
+  const encoded = encodeURIComponent(orderId);
+  switch (action) {
+    case "pause":
+      return `/orders/${encoded}/pause`;
+    case "resume":
+      return `/orders/${encoded}/resume`;
+    case "cancel":
+      return `/orders/${encoded}/cancel`;
+    case "withdraw":
+      return `/orders/${encoded}/withdraw`;
+  }
+}
+
+/**
+ * Posts a partner lifecycle mutation (pause / resume / cancel / withdraw).
+ * When Titan returns an unsigned `transaction`, the desk must show it and wait
+ * for explicit Approve before Wallet Standard signs — never auto-sign.
+ *
+ * @param sub - Titan user sub (wallet pubkey).
+ * @param orderId - Target order id.
+ * @param action - Lifecycle action.
+ * @param idempotencyKey - Optional idempotency key.
+ * @param signal - Optional abort signal.
+ * @returns Normalized lifecycle result for the approval UI.
+ */
+export async function mutateOrderLifecycle(
+  sub: string,
+  orderId: string,
+  action: TitanOrderLifecycleAction,
+  idempotencyKey?: string,
+  signal?: AbortSignal,
+): Promise<TitanOrderLifecycleResult> {
+  const parsed = titanOrderLifecycleRequestSchema.parse({
+    sub,
+    action,
+    idempotencyKey,
+  });
+  const trimmedOrderId = z.string().trim().min(1).max(128).parse(orderId);
+  const { baseUrl, apiKey } = requireDcaEnv();
+
+  const payload = await callTitanDca(lifecyclePath(parsed.action, trimmedOrderId), {
+    method: "POST",
+    baseUrl,
+    apiKey,
+    sub: parsed.sub,
+    body: {},
+    idempotencyKey: parsed.idempotencyKey,
+    signal,
+  });
+
+  const data = unwrapData(payload);
+  const row =
+    data && typeof data === "object" ? (data as Record<string, unknown>) : ({} as Record<string, unknown>);
+  const orderCandidate = "order" in row ? row.order : row;
+  const orderParsed = titanOrderSchema.safeParse(orderCandidate);
+  const transaction =
+    typeof row.transaction === "string"
+      ? row.transaction
+      : typeof row.unsignedTransaction === "string"
+        ? row.unsignedTransaction
+        : undefined;
+  const status =
+    typeof row.status === "string"
+      ? row.status
+      : orderParsed.success
+        ? orderParsed.data.status
+        : undefined;
+  const message = typeof row.message === "string" ? row.message : undefined;
+
+  return titanOrderLifecycleResultSchema.parse({
+    action: parsed.action,
+    orderId: trimmedOrderId,
+    transaction,
+    encoding: typeof row.encoding === "string" ? row.encoding : transaction ? "base64" : undefined,
+    order: orderParsed.success ? orderParsed.data : orderCandidate,
+    status,
+    message,
   });
 }
 

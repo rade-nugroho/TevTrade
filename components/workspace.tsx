@@ -3,6 +3,7 @@
 import { useState } from "react";
 import AiChat1 from "@/components/ai-chat-1";
 import AppSidebar2, { DESK_SIDEBAR_ITEMS } from "@/components/blocks/app-sidebar-2";
+import { BridgeView } from "@/components/blocks/bridge-view";
 import { DeskAnalytics } from "@/components/blocks/desk-analytics";
 import { DeskBook } from "@/components/blocks/desk-book";
 import { SwapQuote } from "@/components/blocks/swap-quote";
@@ -49,6 +50,7 @@ export function Workspace() {
               <TitanDirectQuote />
             </>
           ) : null}
+          {view === "bridge" ? <BridgeView /> : null}
           {view === "orders" ? <TitanOrders /> : null}
           {view === "desk" ? <DeskBook /> : null}
           {view === "analytics" ? <DeskAnalytics /> : null}

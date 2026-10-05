@@ -7,6 +7,7 @@ import {
   ListOrdered,
   MessageSquare,
   ArrowLeftRight,
+  Shuffle,
   Workflow,
 } from "lucide-react";
 
@@ -45,6 +46,7 @@ export const DESK_SIDEBAR_ITEMS: readonly AppSidebar2Item[] = [
   { id: "decision", label: "Decision", icon: MessageSquare },
   { id: "automation", label: "Automation", icon: Workflow },
   { id: "quote", label: "Quote", icon: ArrowLeftRight },
+  { id: "bridge", label: "Bridge", icon: Shuffle },
   { id: "orders", label: "Orders", icon: ListOrdered },
   { id: "desk", label: "Desk", icon: Briefcase },
   { id: "analytics", label: "Analytics", icon: BarChart3 },

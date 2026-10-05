@@ -315,3 +315,67 @@ export function writeTitanSession(session: TitanSession): void {
 export function buildOrderIdempotencyKey(orderType: TitanOrderType, attemptId: string): string {
   return `${orderType}:create:${attemptId}:v1`;
 }
+
+/**
+ * Partner order lifecycle mutations that may return an unsigned transaction.
+ */
+export const titanOrderLifecycleActionSchema = z.enum([
+  "pause",
+  "resume",
+  "cancel",
+  "withdraw",
+]);
+
+/**
+ * Inferred lifecycle action.
+ */
+export type TitanOrderLifecycleAction = z.infer<typeof titanOrderLifecycleActionSchema>;
+
+/**
+ * Body the browser posts to `POST /api/titan/orders/:orderId/lifecycle`.
+ */
+export const titanOrderLifecycleRequestSchema = z.object({
+  sub: titanSubSchema,
+  action: titanOrderLifecycleActionSchema,
+  idempotencyKey: z.string().trim().min(8).max(128).optional(),
+});
+
+/**
+ * Inferred lifecycle request.
+ */
+export type TitanOrderLifecycleRequest = z.infer<typeof titanOrderLifecycleRequestSchema>;
+
+/**
+ * Lifecycle mutation preview. When `transaction` is set, Wallet Standard must
+ * sign after explicit human Approve — never auto-sign, never `id.json`.
+ */
+export const titanOrderLifecycleResultSchema = z.object({
+  action: titanOrderLifecycleActionSchema,
+  orderId: z.string().min(1),
+  transaction: z.string().min(1).optional(),
+  encoding: z.string().optional(),
+  order: titanOrderSchema.or(z.unknown()).optional(),
+  status: z.string().optional(),
+  message: z.string().optional(),
+});
+
+/**
+ * Inferred lifecycle result.
+ */
+export type TitanOrderLifecycleResult = z.infer<typeof titanOrderLifecycleResultSchema>;
+
+/**
+ * Builds an idempotency key for one lifecycle mutation attempt.
+ *
+ * @param action - pause | resume | cancel | withdraw.
+ * @param orderId - Target order id.
+ * @param attemptId - Client attempt UUID.
+ * @returns Stable key for the partner `X-Idempotency-Key` header.
+ */
+export function buildLifecycleIdempotencyKey(
+  action: TitanOrderLifecycleAction,
+  orderId: string,
+  attemptId: string,
+): string {
+  return `${action}:${orderId}:${attemptId}:v1`;
+}

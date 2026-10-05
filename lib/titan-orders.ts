@@ -50,6 +50,7 @@ export {
   listMeOrders,
   listOrderExecutions,
   listOrders,
+  mutateOrderLifecycle,
   onboardPartnerUser,
   partnerErrorResponse,
   validateSiwsMessage,
@@ -86,6 +87,7 @@ export const TITAN_SPECIAL_ORDER_PROXIED = [
   "GET /api/titan/orders → GET /me/orders",
   "GET /api/titan/orders/:orderId/deposit → GET /orders/:id/deposit",
   "GET /api/titan/orders/:orderId/executions → GET /orders/:id/executions",
+  "POST /api/titan/orders/:orderId/lifecycle → POST /orders/:id/{pause|resume|cancel|withdraw}",
   "GET /api/titan/me/balance → GET /me/balance",
 ] as const;
 
@@ -96,8 +98,4 @@ export const TITAN_SPECIAL_ORDER_PLANNED = [
   "GET /health",
   "GET /me",
   "GET /orders/:id",
-  "POST /orders/:id/pause",
-  "POST /orders/:id/resume",
-  "POST /orders/:id/cancel",
-  "POST /orders/:id/withdraw",
 ] as const;

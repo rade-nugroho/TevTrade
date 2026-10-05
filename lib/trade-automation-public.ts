@@ -36,6 +36,7 @@ export const automationPhaseSchema = z.enum([
   "decided",
   "quoting",
   "quoted",
+  "simulating",
   "intenting",
   "awaiting_approval",
   "signing",
@@ -75,11 +76,15 @@ export type AutomationOrderFormInput = {
   readonly cycleFrequencySeconds: string;
   readonly totalCycles: string;
   readonly triggerPriceUi: string;
+  readonly stopLossPriceUi: string;
+  readonly takeProfitPriceUi: string;
   readonly priceDecimals: string;
   readonly priceBasis: AutomationPriceBasis;
   readonly minOutputUi: string;
   readonly outputDecimals: number;
   readonly trailingStopBps: string;
+  readonly executionsTotal: string;
+  readonly minGapSeconds: string;
 };
 
 /**
@@ -140,13 +145,20 @@ export function trackLabel(track: AutomationTrack): string {
 
 /**
  * Order types the Automation desk can build configs for (happy path).
- * `oco` and `slice` still need the Orders raw-JSON surface.
+ * All five partner types (`dca`, `stop_loss`, `take_profit`, `oco`, `slice`) are supported.
+ * Orders raw-JSON remains available for partner-specific extensions.
  *
  * @param orderType - Selected Titan order type.
  * @returns True when Automation can assemble a typed config.
  */
 export function automationSupportsOrderType(orderType: TitanOrderType): boolean {
-  return orderType === "dca" || orderType === "stop_loss" || orderType === "take_profit";
+  return (
+    orderType === "dca" ||
+    orderType === "stop_loss" ||
+    orderType === "take_profit" ||
+    orderType === "oco" ||
+    orderType === "slice"
+  );
 }
 
 /**
@@ -230,6 +242,63 @@ export function buildTriggerOrderConfig(
 }
 
 /**
+ * Builds an OCO create `config` (stop-loss + take-profit legs) from desk fields.
+ *
+ * @param form - Automation form amounts and dual triggers.
+ * @returns Config object, or null when fields are invalid.
+ */
+export function buildOcoOrderConfig(form: AutomationOrderFormInput): Record<string, unknown> | null {
+  const amount = toSmallestUnits(form.uiAmount, form.inputDecimals);
+  const priceDecimals = Number(form.priceDecimals);
+  if (!amount) return null;
+  if (!Number.isInteger(priceDecimals) || priceDecimals < 0 || priceDecimals > 18) return null;
+  const stopLossPrice = toFixedPointPrice(form.stopLossPriceUi, priceDecimals);
+  const takeProfitPrice = toFixedPointPrice(form.takeProfitPriceUi, priceDecimals);
+  if (!stopLossPrice || !takeProfitPrice) return null;
+
+  const config: Record<string, unknown> = {
+    inputMint: form.inputMint.trim(),
+    outputMint: form.outputMint.trim(),
+    amount,
+    stopLossPrice,
+    takeProfitPrice,
+    priceDecimals,
+    priceBasis: form.priceBasis,
+  };
+
+  const minOutputTrimmed = form.minOutputUi.trim();
+  if (minOutputTrimmed) {
+    const minOutputAmount = toSmallestUnits(minOutputTrimmed, form.outputDecimals);
+    if (!minOutputAmount) return null;
+    config.minOutputAmount = minOutputAmount;
+  }
+
+  return config;
+}
+
+/**
+ * Builds a Slice Order create `config` from desk fields.
+ *
+ * @param form - Automation form deposit, chunk count, and gap.
+ * @returns Config object, or null when fields are invalid.
+ */
+export function buildSliceOrderConfig(form: AutomationOrderFormInput): Record<string, unknown> | null {
+  const totalAmount = toSmallestUnits(form.uiAmount, form.inputDecimals);
+  const executionsTotal = Number(form.executionsTotal);
+  const minGapSeconds = Number(form.minGapSeconds);
+  if (!totalAmount) return null;
+  if (!Number.isInteger(executionsTotal) || executionsTotal < 2) return null;
+  if (!Number.isInteger(minGapSeconds) || minGapSeconds < 0) return null;
+  return {
+    inputMint: form.inputMint.trim(),
+    outputMint: form.outputMint.trim(),
+    totalAmount,
+    executionsTotal,
+    minGapSeconds,
+  };
+}
+
+/**
  * Builds the partner `config` for the selected automation order type.
  *
  * @param orderType - Titan order type.
@@ -244,5 +313,7 @@ export function buildAutomationOrderConfig(
   if (orderType === "stop_loss" || orderType === "take_profit") {
     return buildTriggerOrderConfig(form);
   }
+  if (orderType === "oco") return buildOcoOrderConfig(form);
+  if (orderType === "slice") return buildSliceOrderConfig(form);
   return null;
 }
