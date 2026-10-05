@@ -11,15 +11,18 @@ import {
 } from "@solana/kit-plugin-wallet/react";
 import { address as solanaAddress } from "@solana/kit";
 import { useClient, useRequest } from "@solana/react";
+import { TitanOnboardButton } from "@/components/blocks/titan-onboard";
 import type { AppClient } from "@/lib/client";
 import { formatSol, readLamports, SOLANA_CHAIN, solanaClusterLabel } from "@/lib/solana-cluster";
 
 /**
  * Public RPC status returned by `GET /api/rpc`.
+ * `deskWalletAddress` is a public pubkey only (never a secret key).
  */
 type RpcStatus = {
   readonly clusterLabel: string;
   readonly provider: "helius" | "public-devnet";
+  readonly deskWalletAddress?: string | null;
 };
 
 /**
@@ -106,6 +109,7 @@ function WalletControls({ client }: { client: AppClient }) {
             <p className="text-xs text-neutral-500">This wallet cannot sign version 1 transactions yet.</p>
           )}
         </div>
+        <TitanOnboardButton />
         <button
           type="button"
           onClick={() => disconnect.dispatch()}

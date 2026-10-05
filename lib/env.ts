@@ -10,8 +10,9 @@ function readOptional(name: string): string | undefined {
 
 /**
  * Server configuration for Ollama, Helius, TypeDB, and Titan.
- * Secrets stay on the server. The browser reaches Helius through `/api/rpc`
- * and Titan through `/api/titan/quote`.
+ * Secrets stay on the server. The browser reaches Helius through `/api/rpc`,
+ * Portal quotes through `/api/titan/quote`, partner DCA through `/api/titan/*`,
+ * and Direct quotes through `/api/titan/direct/*`.
  */
 export type ServerEnv = {
   readonly ollamaApiKey: string | undefined;
@@ -22,9 +23,20 @@ export type ServerEnv = {
   readonly typedbUrl: string | undefined;
   readonly typedbToken: string | undefined;
   readonly typedbDatabase: string;
+  /**
+   * Optional public Solana address for balance context when no Wallet Standard
+   * wallet is connected. Never a secret key or keypair path.
+   */
+  readonly deskWalletAddress: string | undefined;
   readonly titanApiKey: string | undefined;
   readonly titanApiUrl: string;
+  readonly titanDcaBaseUrl: string | undefined;
+  readonly titanDcaApiKey: string | undefined;
+  readonly titanEndpoint: string | undefined;
+  readonly titanJwt: string | undefined;
 };
+
+const ADDRESS_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
 /**
  * Loads server environment variables.
@@ -37,6 +49,11 @@ export function readServerEnv(): ServerEnv {
     throw new Error("TYPEDB_DATABASE must be 1-64 letters, numbers, underscores, or hyphens.");
   }
 
+  const deskWalletAddress = readOptional("DESK_WALLET_ADDRESS");
+  if (deskWalletAddress && !ADDRESS_PATTERN.test(deskWalletAddress)) {
+    throw new Error("DESK_WALLET_ADDRESS must be a base58 Solana public address (32–44 characters).");
+  }
+
   return {
     ollamaApiKey: readOptional("OLLAMA_API_KEY"),
     ollamaUrl: readOptional("OLLAMA_URL_ENDPOINT") ?? readOptional("OLLAMA_URL_ENPOINT"),
@@ -46,7 +63,12 @@ export function readServerEnv(): ServerEnv {
     typedbUrl: readOptional("TYPEDB_URL"),
     typedbToken: readOptional("TYPEDB_TOKEN"),
     typedbDatabase: database,
+    deskWalletAddress,
     titanApiKey: readOptional("TITAN_API_KEY"),
     titanApiUrl: readOptional("TITAN_API_URL") ?? "https://portal.api.titan.exchange",
+    titanDcaBaseUrl: readOptional("TITAN_DCA_BASE_URL"),
+    titanDcaApiKey: readOptional("TITAN_DCA_API_KEY"),
+    titanEndpoint: readOptional("TITAN_ENDPOINT"),
+    titanJwt: readOptional("TITAN_JWT"),
   };
 }

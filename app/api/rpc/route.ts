@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { readServerEnv } from "@/lib/env";
 import { resolveSolanaRpcUrl } from "@/lib/helius";
 import { SOLANA_CHAIN, solanaClusterLabel } from "@/lib/solana-cluster";
 
@@ -8,14 +9,17 @@ const MAX_BODY_BYTES = 1_000_000;
 
 /**
  * Tells the wallet panel which cluster and provider are active.
- * The response omits the RPC URL so the API key stays on the server.
+ * Optionally includes the public `DESK_WALLET_ADDRESS` for read-only desk balance.
+ * The response omits the RPC URL and never includes a secret key.
  */
 export function GET() {
   const { provider } = resolveSolanaRpcUrl();
+  const deskWalletAddress = readServerEnv().deskWalletAddress;
   return NextResponse.json({
     cluster: SOLANA_CHAIN,
     clusterLabel: solanaClusterLabel(),
     provider,
+    deskWalletAddress: deskWalletAddress ?? null,
   });
 }
 

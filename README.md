@@ -1,8 +1,8 @@
 # TevTrade
 
-TevTrade is a local decision desk. A question goes to Ollama. The answer is grounded in trading rules stored in TypeDB and, when a wallet is connected, a SOL balance read through Helius.
+TevTrade is a local decision desk. A question goes to Ollama. The answer is grounded in trading rules stored in TypeDB and a SOL balance read through Helius (connected Wallet Standard wallet, or optional public `DESK_WALLET_ADDRESS`).
 
-The browser never receives `HELIUS_API_KEY`, `OLLAMA_API_KEY`, `TYPEDB_TOKEN`, or `TITAN_API_KEY`. Wallet signing stays in the connected wallet. The Quote view asks Titan for a mainnet route and shows the recommended provider. It does not sign or send the swap.
+The browser never receives `HELIUS_API_KEY`, `OLLAMA_API_KEY`, `TYPEDB_TOKEN`, `TITAN_API_KEY`, `TITAN_DCA_API_KEY`, or `TITAN_JWT`. Wallet signing stays in a Wallet Standard extension. Do not import a filesystem keypair (`id.json`) into the desk. The Quote view asks Titan for a mainnet Portal route and can stream Direct quotes. It does not sign or send the swap. Orders uses one SIWS signature to link the wallet, then intent → sign deposit → confirm.
 
 ## Run
 
@@ -21,7 +21,7 @@ The browser never receives `HELIUS_API_KEY`, `OLLAMA_API_KEY`, `TYPEDB_TOKEN`, o
 
 3. Open [http://localhost:3000](http://localhost:3000).
 
-The Decision view is the chat. Quote asks Titan for a mainnet route. Desk, Ledger, Analytics, Operations, and Sidebar are the existing interface blocks.
+The Decision view is the chat. Quote asks Titan for a Portal route and can open a Direct quote stream. Orders runs SIWS onboard plus partner intent/confirm. Desk and Analytics are placeholders until wired to your book.
 
 ## Services
 
@@ -34,12 +34,40 @@ The Decision view is the chat. Quote asks Titan for a mainnet route. Desk, Ledge
 | `HELIUS_API_KEY` | Appended to `HELIUS_URL` when that URL has no `api-key` parameter. |
 | `NEXT_PUBLIC_SOLANA_CLUSTER` | Wallet chain. The default is `solana:devnet`. Match this to `HELIUS_URL`. |
 | `TYPEDB_URL` | TypeDB HTTP root, such as `http://127.0.0.1:8000`. |
-| `TYPEDB_TOKEN` | Bearer token from `POST /v1/signin`. |
+| `TYPEDB_TOKEN` | Bearer token from `POST /v1/signin` (local default user `admin` / `password`). Restart the app after updating. |
 | `TYPEDB_DATABASE` | Database name. The default is `tevtrade`. |
+| `DESK_WALLET_ADDRESS` | Optional public Solana address for Decision balance when no extension wallet is connected. Never a secret key. |
 | `TITAN_API_KEY` | Titan Developers Portal key. Used only by `POST /api/titan/quote`. |
 | `TITAN_API_URL` | Portal root. The default is `https://portal.api.titan.exchange`. |
+| `TITAN_DCA_BASE_URL` | Titan DCA partner API root (no trailing slash). Used by onboard and orders proxies. |
+| `TITAN_DCA_API_KEY` | Partner key sent as `X-Titan-Key` from the server only. |
+| `TITAN_ENDPOINT` | Titan Direct WebSocket host only (no `wss://`). |
+| `TITAN_JWT` | Direct auth token for `V1Client.connect`. Never expose to the browser. |
+
+### Titan partner flows
+
+- **SIWS onboard** — Connect a wallet, click Link Titan. The desk uses the wallet pubkey as `sub`, builds the canonical SIWS message, signs it, and posts to `POST /api/titan/onboard`. Safe to call on every login.
+- **Orders** — `POST /api/titan/orders/intent` (optional `onboardIfNeeded: true`) returns a deposit tx and `feeLamports`. Sign and `POST /api/titan/orders/confirm`. On `409 USER_PUBKEY_CONFLICT`, the UI runs SIWS then re-intents without the flag. Idempotency keys are reuse-safe for the same body.
+- **Direct quotes** — `POST /api/titan/direct/price` and `POST /api/titan/direct/stream` keep the JWT on the server.
 
 On the first decision, TevTrade creates the TypeDB database when it is missing, defines `trading-rule`, and inserts three seed rules: position size, uncertainty, and signing.
+
+Local TypeDB (Homebrew example):
+
+```bash
+typedb --config /opt/homebrew/etc/typedb/config.yml
+curl -s http://127.0.0.1:8000/v1/signin \
+  -H 'content-type: application/json' \
+  -d '{"username":"admin","password":"password"}'
+# Put the returned token in TYPEDB_TOKEN, then restart npm run dev.
+```
+
+For a read-only desk balance without connecting an extension, derive the public address only:
+
+```bash
+solana-keygen pubkey id.json
+# Set DESK_WALLET_ADDRESS to that pubkey. Do not load id.json as a signer.
+```
 
 The desk calls an OpenAI-compatible chat completion. The request sends the Tev1 system instruction, then JSON with `state`, `question`, and 2–24 labeled options. Temperature is 0, `max_tokens` is 8, and thinking is off. The model returns one letter. TevTrade maps that letter to an action key (`add`, `stand_aside`, or `none`). The letter is not a probability, and it is not the sole authority for a trade.
 

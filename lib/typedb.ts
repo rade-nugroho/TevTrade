@@ -66,11 +66,19 @@ let ruleBookReady: Promise<void> | null = null;
  * Reads the local rule book. Missing configuration does not throw.
  */
 export async function readDecisionFacts(): Promise<DecisionFacts> {
-  const { typedbUrl } = readServerEnv();
+  const { typedbUrl, typedbToken } = readServerEnv();
   if (!typedbUrl) {
     return {
       status: "unconfigured",
-      summary: "TypeDB is not configured. Set TYPEDB_URL and TYPEDB_TOKEN.",
+      summary:
+        "TypeDB is not configured. Set TYPEDB_URL to the HTTP root (for example http://127.0.0.1:8000) and TYPEDB_TOKEN from POST /v1/signin.",
+    };
+  }
+  if (!typedbToken) {
+    return {
+      status: "unconfigured",
+      summary:
+        "TYPEDB_URL is set, but TYPEDB_TOKEN is missing. With TypeDB running locally, run POST /v1/signin (default admin credentials) and set the returned bearer token.",
     };
   }
 
@@ -87,7 +95,11 @@ export async function readDecisionFacts(): Promise<DecisionFacts> {
     return { status: "ok", summary };
   } catch (error) {
     const message = error instanceof Error ? error.message : "TypeDB request failed.";
-    return { status: "error", summary: `TypeDB is unavailable. ${message}` };
+    const authHint =
+      /aut|token|bearer|unauthorized|401/i.test(message)
+        ? " Refresh TYPEDB_TOKEN with POST /v1/signin."
+        : "";
+    return { status: "error", summary: `TypeDB is unavailable. ${message}${authHint}` };
   }
 }
 

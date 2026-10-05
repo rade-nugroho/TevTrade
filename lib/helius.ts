@@ -27,6 +27,11 @@ const balanceResponseSchema = z.object({
 export type RpcProvider = "helius" | "public-devnet";
 
 /**
+ * How the decision route obtained the address used for a balance lookup.
+ */
+export type WalletBalanceSource = "connected" | "desk";
+
+/**
  * Chain note passed to the local decision model.
  */
 export type ChainNote = {
@@ -59,16 +64,21 @@ export function resolveSolanaRpcUrl(): { url: string; provider: RpcProvider } {
 /**
  * Reads a confirmed SOL balance for a wallet address.
  * On-chain data is treated as untrusted and reduced to a number.
+ * `walletSource` only changes the summary wording; this path never signs.
  */
-export async function readWalletBalance(address: string | undefined): Promise<ChainNote> {
+export async function readWalletBalance(
+  address: string | undefined,
+  walletSource: WalletBalanceSource = "connected",
+): Promise<ChainNote> {
   const { provider } = resolveSolanaRpcUrl();
   const source = provider === "helius" ? "Helius" : "public devnet RPC";
+  const walletLabel = walletSource === "desk" ? "desk wallet" : "connected wallet";
 
   if (!address) {
     return {
       status: "no-wallet",
       provider,
-      summary: `No wallet is connected. Balance lookups use ${source}.`,
+      summary: `No wallet is connected and DESK_WALLET_ADDRESS is unset. Balance lookups use ${source}. Connect a Wallet Standard extension, or set DESK_WALLET_ADDRESS to a public address only.`,
     };
   }
   if (!ADDRESS_PATTERN.test(address)) {
@@ -106,7 +116,7 @@ export async function readWalletBalance(address: string | undefined): Promise<Ch
     return {
       status: "ok",
       provider,
-      summary: `${source} reports ${formatSol(BigInt(parsed.data.result.value))} for the connected wallet.`,
+      summary: `${source} reports ${formatSol(BigInt(parsed.data.result.value))} for the ${walletLabel}.`,
     };
   } catch {
     return {

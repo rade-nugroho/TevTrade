@@ -7,6 +7,7 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const nextConfig = {
   reactStrictMode: true,
   outputFileTracingRoot: root,
+  serverExternalPackages: ["@titanexchange/sdk-ts"],
 };
 
 export default nextConfig;
