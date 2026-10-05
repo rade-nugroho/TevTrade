@@ -167,14 +167,6 @@ export function validateSiwsMessage(message: string, userPubkey: string, sub: st
 }
 
 /**
- * Builds a fresh SIWS message for local validation checks and demos.
- * Production onboard uses the browser-built message the wallet signed.
- */
-export function createSiwsMessageFor(address: string, sub: string): string {
-  return buildSiwsMessage(address, sub);
-}
-
-/**
  * Reads Titan DCA env and throws when the partner key or base URL is missing.
  */
 function requireDcaEnv(): { baseUrl: string; apiKey: string } {

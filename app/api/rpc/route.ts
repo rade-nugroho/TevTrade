@@ -24,7 +24,7 @@ export function GET() {
 }
 
 /**
- * Forwards a Solana JSON-RPC request to Helius, or to public devnet when Helius is unset.
+ * Forwards a Solana JSON-RPC request to the active upstream (localnet, Helius, or public devnet).
  */
 export async function POST(request: Request) {
   const body = await request.text();

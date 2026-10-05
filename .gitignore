@@ -7,3 +7,5 @@ out/
 coverage/
 *.tsbuildinfo
 id.json
+test-ledger/
+.validator/

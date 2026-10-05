@@ -1,6 +1,6 @@
 import "server-only";
 
-import { V1Client, types, ConnectionClosed } from "@titanexchange/sdk-ts";
+import { V1Client, client as titanSdk, types } from "@titanexchange/sdk-ts";
 import { getBase58Decoder, getBase58Encoder } from "@solana/kit";
 import { z } from "zod";
 import { readServerEnv } from "@/lib/env";
@@ -153,8 +153,7 @@ async function withDirectClient<T>(operation: (client: V1Client) => Promise<T>):
       return await operation(client);
     } catch (error) {
       lastError = error;
-      const unclean = error instanceof ConnectionClosed && error.wasClean === false;
-      if (!unclean || attempt >= 2) {
+      if (!(error instanceof titanSdk.ConnectionClosed) || error.wasClean || attempt >= 2) {
         throw error;
       }
       await new Promise((resolve) => setTimeout(resolve, RECONNECT_BACKOFF_MS));

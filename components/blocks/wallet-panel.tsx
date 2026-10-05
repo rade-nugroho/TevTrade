@@ -21,12 +21,13 @@ import { formatSol, readLamports, SOLANA_CHAIN, solanaClusterLabel } from "@/lib
  */
 type RpcStatus = {
   readonly clusterLabel: string;
-  readonly provider: "helius" | "public-devnet";
+  readonly provider: "helius" | "public-devnet" | "localnet";
   readonly deskWalletAddress?: string | null;
 };
 
 /**
  * Connects a Wallet Standard wallet and shows the cluster, provider, and SOL balance.
+ * When no extension is connected, shows the public desk address for read-only balance.
  */
 export function WalletPanel() {
   const client = useClient<AppClient>();
@@ -58,7 +59,9 @@ function WalletControls({ client }: { client: AppClient }) {
   const disconnect = useDisconnect(client);
   const [rpcStatus, setRpcStatus] = useState<RpcStatus | null>(null);
   const canSignV1 = connected?.supportedTransactionVersions.has(1) ?? false;
-  const walletAddress = connected?.account.address;
+  const deskAddress = rpcStatus?.deskWalletAddress ?? null;
+  const walletAddress = connected?.account.address ?? deskAddress ?? undefined;
+  const showingDeskOnly = !connected && Boolean(deskAddress);
   const balanceSource = useMemo(
     () =>
       walletAddress
@@ -87,7 +90,12 @@ function WalletControls({ client }: { client: AppClient }) {
     };
   }, []);
 
-  const providerLabel = rpcStatus?.provider === "helius" ? "Helius" : "Public devnet";
+  const providerLabel =
+    rpcStatus?.provider === "helius"
+      ? "Helius"
+      : rpcStatus?.provider === "localnet"
+        ? "Local validator"
+        : "Public devnet";
   const clusterLabel = rpcStatus?.clusterLabel ?? solanaClusterLabel(SOLANA_CHAIN);
 
   if (status === "pending") return null;
@@ -123,12 +131,28 @@ function WalletControls({ client }: { client: AppClient }) {
   }
 
   return (
-    <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-      <p className="hidden text-xs text-neutral-500 md:block">
-        {clusterLabel} · {providerLabel}
-      </p>
+    <div className="flex shrink-0 flex-wrap items-center gap-2 justify-end">
+      {showingDeskOnly && deskAddress ? (
+        <div className="hidden text-right sm:block">
+          <p className="font-mono text-sm text-neutral-700 dark:text-neutral-300">
+            Desk {deskAddress.slice(0, 4)}…{deskAddress.slice(-4)}
+          </p>
+          <p className="text-xs text-neutral-500">
+            {clusterLabel} · {providerLabel} · read-only
+            {balanceRequest.status === "fetching" ? " · …" : ""}
+            {balance ? ` · ${balance}` : ""}
+            {balanceRequest.status === "error" ? " · balance unavailable" : ""}
+          </p>
+        </div>
+      ) : (
+        <p className="hidden text-xs text-neutral-500 md:block">
+          {clusterLabel} · {providerLabel}
+        </p>
+      )}
       {wallets.length === 0 ? (
-        <p className="text-xs text-neutral-500">No wallet found</p>
+        <p className="text-xs text-neutral-500">
+          {showingDeskOnly ? "Import id.json into Phantom to sign" : "No wallet found"}
+        </p>
       ) : (
         wallets.map((wallet) => (
           <button

@@ -2,9 +2,10 @@ import "server-only";
 
 import { z } from "zod";
 import { readServerEnv } from "./env";
-import { formatSol } from "./solana-cluster";
+import { formatSol, SOLANA_CHAIN } from "./solana-cluster";
 
 const PUBLIC_DEVNET_RPC_URL = "https://api.devnet.solana.com";
+const LOCALNET_RPC_URL = "http://127.0.0.1:8899";
 
 const ADDRESS_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
@@ -24,7 +25,7 @@ const balanceResponseSchema = z.object({
 /**
  * Which RPC the server will call. The API key never leaves this module.
  */
-export type RpcProvider = "helius" | "public-devnet";
+export type RpcProvider = "helius" | "public-devnet" | "localnet";
 
 /**
  * How the decision route obtained the address used for a balance lookup.
@@ -41,11 +42,37 @@ export type ChainNote = {
 };
 
 /**
+ * Returns a human label for the active RPC provider.
+ */
+function providerLabel(provider: RpcProvider): string {
+  switch (provider) {
+    case "helius":
+      return "Helius";
+    case "localnet":
+      return "local validator";
+    default:
+      return "public devnet RPC";
+  }
+}
+
+/**
  * Builds the upstream Solana RPC URL.
+ * Localnet never uses Helius — it prefers `NEXT_PUBLIC_SOLANA_RPC_URL`, then `127.0.0.1:8899`.
  * A Helius URL without `api-key` receives `HELIUS_API_KEY`.
  * An empty Helius URL falls back to public devnet.
  */
 export function resolveSolanaRpcUrl(): { url: string; provider: RpcProvider } {
+  const publicRpc = process.env.NEXT_PUBLIC_SOLANA_RPC_URL?.trim();
+  if (SOLANA_CHAIN === "solana:localnet") {
+    return {
+      url: publicRpc && publicRpc.length > 0 ? publicRpc : LOCALNET_RPC_URL,
+      provider: "localnet",
+    };
+  }
+  if (publicRpc && /127\.0\.0\.1|localhost/.test(publicRpc)) {
+    return { url: publicRpc, provider: "localnet" };
+  }
+
   const { heliusUrl, heliusApiKey } = readServerEnv();
   if (!heliusUrl) {
     return { url: PUBLIC_DEVNET_RPC_URL, provider: "public-devnet" };
@@ -71,7 +98,7 @@ export async function readWalletBalance(
   walletSource: WalletBalanceSource = "connected",
 ): Promise<ChainNote> {
   const { provider } = resolveSolanaRpcUrl();
-  const source = provider === "helius" ? "Helius" : "public devnet RPC";
+  const source = providerLabel(provider);
   const walletLabel = walletSource === "desk" ? "desk wallet" : "connected wallet";
 
   if (!address) {

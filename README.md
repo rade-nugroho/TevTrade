@@ -30,9 +30,10 @@ The Decision view is the chat. Quote asks Titan for a Portal route and can open 
 | `OLLAMA_URL_ENDPOINT` | Ollama host. The default is `http://127.0.0.1:11434`. `OLLAMA_URL_ENPOINT` is still accepted. |
 | `OLLAMA_MODEL` | Model name. The default is `tev1:0.8b`, the Ollama tag for togethercomputer/Tev1-0.8B-experimental. |
 | `OLLAMA_API_KEY` | Required only for `https://ollama.com`. |
-| `HELIUS_URL` | Helius RPC URL, preferably devnet. Empty falls back to public devnet. |
+| `HELIUS_URL` | Helius RPC URL, preferably devnet. Empty falls back to public devnet. Ignored when the cluster is `solana:localnet`. |
 | `HELIUS_API_KEY` | Appended to `HELIUS_URL` when that URL has no `api-key` parameter. |
-| `NEXT_PUBLIC_SOLANA_CLUSTER` | Wallet chain. The default is `solana:devnet`. Match this to `HELIUS_URL`. |
+| `NEXT_PUBLIC_SOLANA_CLUSTER` | Wallet chain. The default is `solana:devnet`. Use `solana:localnet` with a local validator. |
+| `NEXT_PUBLIC_SOLANA_RPC_URL` | Optional browser RPC. For localnet set `http://127.0.0.1:8899` so the desk does not go through Helius. |
 | `TYPEDB_URL` | TypeDB HTTP root, such as `http://127.0.0.1:8000`. |
 | `TYPEDB_TOKEN` | Bearer token from `POST /v1/signin` (local default user `admin` / `password`). Restart the app after updating. |
 | `TYPEDB_DATABASE` | Database name. The default is `tevtrade`. |
@@ -68,6 +69,25 @@ For a read-only desk balance without connecting an extension, derive the public 
 solana-keygen pubkey id.json
 # Set DESK_WALLET_ADDRESS to that pubkey. Do not load id.json as a signer.
 ```
+
+### Local Solana validator
+
+Run a personal desk against `solana-test-validator` (not SaaS RPC):
+
+```bash
+# Ledger stays in the repo; both paths are gitignored
+solana-test-validator --ledger .validator
+# or reuse an existing project ledger: --ledger test-ledger
+
+# Point the app at localnet (restart `npm run dev` after editing .env)
+# NEXT_PUBLIC_SOLANA_CLUSTER=solana:localnet
+# NEXT_PUBLIC_SOLANA_RPC_URL=http://127.0.0.1:8899
+
+# Optional: fund the desk pubkey only (never import id.json as a signer)
+solana airdrop 10 "$(solana-keygen pubkey id.json)" --url http://127.0.0.1:8899
+```
+
+RPC is `http://127.0.0.1:8899`, faucet `9900`. Stop with `pkill -f solana-test-validator` or kill the process listening on port 8899.
 
 The desk calls an OpenAI-compatible chat completion. The request sends the Tev1 system instruction, then JSON with `state`, `question`, and 2–24 labeled options. Temperature is 0, `max_tokens` is 8, and thinking is off. The model returns one letter. TevTrade maps that letter to an action key (`add`, `stand_aside`, or `none`). The letter is not a probability, and it is not the sole authority for a trade.
 
