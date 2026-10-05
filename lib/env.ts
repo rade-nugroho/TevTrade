@@ -11,8 +11,8 @@ function readOptional(name: string): string | undefined {
 /**
  * Server configuration for Ollama, Helius, TypeDB, and Titan.
  * Secrets stay on the server. The browser reaches Helius through `/api/rpc`,
- * Portal quotes through `/api/titan/quote`, partner DCA through `/api/titan/*`,
- * and Direct quotes through `/api/titan/direct/*`.
+ * quotes through `/api/titan/quote` (DART by default, Portal when selected),
+ * partner DCA through `/api/titan/*`, and Direct quotes through `/api/titan/direct/*`.
  */
 export type ServerEnv = {
   readonly ollamaApiKey: string | undefined;
@@ -28,8 +28,21 @@ export type ServerEnv = {
    * wallet is connected. Never a secret key or keypair path.
    */
   readonly deskWalletAddress: string | undefined;
+  /**
+   * Quote surface for `POST /api/titan/quote`.
+   * `dart` (default) uses the free public DART endpoint. `portal` needs `TITAN_API_KEY`.
+   */
+  readonly titanQuoteSource: "dart" | "portal";
+  /** Developers Portal key. Never sent to `/dart`. */
   readonly titanApiKey: string | undefined;
   readonly titanApiUrl: string;
+  /**
+   * Optional DART partner key. Never sent to `portal.api.titan.exchange`.
+   * Public DART works with no key (1 req/s per IP).
+   */
+  readonly titanDartApiKey: string | undefined;
+  /** DART API root. Default `https://api.titan.exchange/dart`. */
+  readonly titanDartUrl: string;
   readonly titanDcaBaseUrl: string | undefined;
   readonly titanDcaApiKey: string | undefined;
   readonly titanEndpoint: string | undefined;
@@ -54,6 +67,11 @@ export function readServerEnv(): ServerEnv {
     throw new Error("DESK_WALLET_ADDRESS must be a base58 Solana public address (32–44 characters).");
   }
 
+  const quoteSourceRaw = (readOptional("TITAN_QUOTE_SOURCE") ?? "dart").toLowerCase();
+  if (quoteSourceRaw !== "dart" && quoteSourceRaw !== "portal") {
+    throw new Error('TITAN_QUOTE_SOURCE must be "dart" or "portal".');
+  }
+
   return {
     ollamaApiKey: readOptional("OLLAMA_API_KEY"),
     ollamaUrl: readOptional("OLLAMA_URL_ENDPOINT") ?? readOptional("OLLAMA_URL_ENPOINT"),
@@ -64,8 +82,11 @@ export function readServerEnv(): ServerEnv {
     typedbToken: readOptional("TYPEDB_TOKEN"),
     typedbDatabase: database,
     deskWalletAddress,
+    titanQuoteSource: quoteSourceRaw,
     titanApiKey: readOptional("TITAN_API_KEY"),
     titanApiUrl: readOptional("TITAN_API_URL") ?? "https://portal.api.titan.exchange",
+    titanDartApiKey: readOptional("TITAN_DART_API_KEY"),
+    titanDartUrl: (readOptional("TITAN_DART_URL") ?? "https://api.titan.exchange/dart").replace(/\/$/, ""),
     titanDcaBaseUrl: readOptional("TITAN_DCA_BASE_URL"),
     titanDcaApiKey: readOptional("TITAN_DCA_API_KEY"),
     titanEndpoint: readOptional("TITAN_ENDPOINT"),

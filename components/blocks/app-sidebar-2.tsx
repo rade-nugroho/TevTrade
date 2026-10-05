@@ -1,7 +1,14 @@
 "use client";
 
 import type { LucideIcon } from "lucide-react";
-import { BarChart3, Briefcase, ListOrdered, MessageSquare, ArrowLeftRight } from "lucide-react";
+import {
+  BarChart3,
+  Briefcase,
+  ListOrdered,
+  MessageSquare,
+  ArrowLeftRight,
+  Workflow,
+} from "lucide-react";
 
 const cx = (...c: (string | false | null | undefined)[]) =>
   c.filter(Boolean).join(" ");
@@ -25,7 +32,7 @@ export type AppSidebar2Item = {
  * Props for the TevTrade desk sidebar rail.
  */
 export type AppSidebar2Props = {
-  readonly items: readonly AppSidebar2Item[];
+  readonly items?: readonly AppSidebar2Item[];
   readonly currentId: string;
   readonly onNavigate: (id: string) => void;
   readonly brandMark?: string;
@@ -36,6 +43,7 @@ export type AppSidebar2Props = {
  */
 export const DESK_SIDEBAR_ITEMS: readonly AppSidebar2Item[] = [
   { id: "decision", label: "Decision", icon: MessageSquare },
+  { id: "automation", label: "Automation", icon: Workflow },
   { id: "quote", label: "Quote", icon: ArrowLeftRight },
   { id: "orders", label: "Orders", icon: ListOrdered },
   { id: "desk", label: "Desk", icon: Briefcase },

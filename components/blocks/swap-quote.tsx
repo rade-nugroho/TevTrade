@@ -41,7 +41,8 @@ function applyMint(mint: string): { mint: string; decimals: number } {
 }
 
 /**
- * Mainnet swap quote. The desk displays Titan's recommended route and does not sign it.
+ * Mainnet DART (default) or Portal swap quote.
+ * The desk displays the route and does not sign or send it.
  */
 export function SwapQuote() {
   const client = useClient<AppClient>();
@@ -90,7 +91,9 @@ export function SwapQuote() {
       <div>
         <h1 className="text-sm font-medium text-neutral-900 dark:text-neutral-100">Quote</h1>
         <p className="mt-1 text-xs leading-5 text-neutral-500">
-          Mainnet route from Titan. This desk shows the recommended provider and does not sign or send the swap.
+          Mainnet Titan DART quote by default (public endpoint, 1 req/s). Portal is optional via{" "}
+          <code className="font-mono text-[11px]">TITAN_QUOTE_SOURCE=portal</code>. This desk does not sign or
+          send the swap.
         </p>
       </div>
 
@@ -223,13 +226,15 @@ export function SwapQuote() {
       {quote ? (
         <div className="flex flex-col gap-3">
           <p className="text-xs text-neutral-500">
+            {quote.source === "dart" ? "DART" : "Portal"}
             {quote.recommendedProvider ? (
               <>
-                Recommended provider{" "}
+                {" "}
+                · recommended{" "}
                 <span className="font-medium text-neutral-900 dark:text-neutral-100">{quote.recommendedProvider}</span>
               </>
             ) : (
-              "Titan did not name a recommended provider."
+              " · Titan did not name a recommended provider."
             )}
             {quote.inputPriceUsd !== null && quote.outputPriceUsd !== null
               ? ` · $${quote.inputPriceUsd.toFixed(4)} to $${quote.outputPriceUsd.toFixed(4)}`

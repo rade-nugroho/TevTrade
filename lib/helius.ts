@@ -12,7 +12,7 @@ const ADDRESS_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const balanceResponseSchema = z.object({
   result: z
     .object({
-      value: z.number().int().nonnegative(),
+      value: z.number().nonnegative(),
     })
     .optional(),
   error: z
@@ -143,7 +143,7 @@ export async function readWalletBalance(
     return {
       status: "ok",
       provider,
-      summary: `${source} reports ${formatSol(BigInt(parsed.data.result.value))} for the ${walletLabel}.`,
+      summary: `${source} reports ${formatSol(BigInt(Math.trunc(parsed.data.result.value)))} for the ${walletLabel}.`,
     };
   } catch {
     return {

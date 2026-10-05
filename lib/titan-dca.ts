@@ -3,6 +3,7 @@ import "server-only";
 import { z } from "zod";
 import { readServerEnv } from "@/lib/env";
 import {
+  titanMeBalanceResultSchema,
   titanOnboardRequestSchema,
   titanOnboardResultSchema,
   titanOrderConfirmRequestSchema,
@@ -10,6 +11,9 @@ import {
   titanOrderDepositResultSchema,
   titanOrderIntentRequestSchema,
   titanOrderIntentResultSchema,
+  titanOrdersListResultSchema,
+  titanSubSchema,
+  type TitanMeBalanceResult,
   type TitanOnboardRequest,
   type TitanOnboardResult,
   type TitanOrderConfirmRequest,
@@ -17,6 +21,7 @@ import {
   type TitanOrderDepositResult,
   type TitanOrderIntentRequest,
   type TitanOrderIntentResult,
+  type TitanOrdersListResult,
   type TitanPartnerError,
 } from "@/lib/titan-dca-public";
 
@@ -269,12 +274,31 @@ async function callTitanDca(
 }
 
 /**
- * Unwraps `{ data: T }` envelopes when present.
+ * Unwraps Titan Special Order envelopes.
+ * Success: `{ success: true, data }` or a bare `{ data }` / payload.
+ * Failure: `{ success: false, error: { code, message, details } }` (HTTP may still be 200).
  */
 function unwrapData(payload: unknown): unknown {
-  if (payload && typeof payload === "object" && "data" in payload) {
-    return (payload as { data: unknown }).data;
+  if (!payload || typeof payload !== "object") return payload;
+  const row = payload as {
+    success?: unknown;
+    data?: unknown;
+    error?: { code?: string; message?: string; details?: unknown };
+  };
+  if (row.success === false) {
+    const code = typeof row.error?.code === "string" ? row.error.code : "TITAN_ERROR";
+    const message =
+      typeof row.error?.message === "string" && row.error.message.trim()
+        ? row.error.message.trim().slice(0, 240)
+        : "Titan partner request failed.";
+    throw new TitanPartnerApiError({
+      status: 400,
+      code,
+      message,
+      details: row.error?.details,
+    });
   }
+  if ("data" in row) return row.data;
   return payload;
 }
 
@@ -427,6 +451,8 @@ export async function confirmOrder(
     txSignature,
     orderId,
     status,
+    pendingOrderId:
+      typeof row.pendingOrderId === "string" ? row.pendingOrderId : parsed.pendingOrderId,
   });
 }
 
@@ -453,6 +479,57 @@ export async function getOrderDeposit(
       status: 502,
       code: "TITAN_ERROR",
       message: "Titan deposit response was missing txSignature.",
+    });
+  }
+  return result.data;
+}
+
+/**
+ * Lists partner orders for a user (`GET /orders`).
+ * Amounts stay as integer strings; the UI formats with mint decimals.
+ */
+export async function listOrders(sub: string, signal?: AbortSignal): Promise<TitanOrdersListResult> {
+  const parsedSub = titanSubSchema.parse(sub);
+  const { baseUrl, apiKey } = requireDcaEnv();
+  const payload = await callTitanDca("/orders", {
+    method: "GET",
+    baseUrl,
+    apiKey,
+    sub: parsedSub,
+    signal,
+  });
+  const data = unwrapData(payload);
+  const result = titanOrdersListResultSchema.safeParse(data);
+  if (!result.success) {
+    throw new TitanPartnerApiError({
+      status: 502,
+      code: "TITAN_ERROR",
+      message: "Titan orders list response did not match the Order & Execution Schema.",
+    });
+  }
+  return result.data;
+}
+
+/**
+ * Reads partner withdrawable balances (`GET /me/balance`).
+ */
+export async function getMeBalance(sub: string, signal?: AbortSignal): Promise<TitanMeBalanceResult> {
+  const parsedSub = titanSubSchema.parse(sub);
+  const { baseUrl, apiKey } = requireDcaEnv();
+  const payload = await callTitanDca("/me/balance", {
+    method: "GET",
+    baseUrl,
+    apiKey,
+    sub: parsedSub,
+    signal,
+  });
+  const data = unwrapData(payload);
+  const result = titanMeBalanceResultSchema.safeParse(data ?? {});
+  if (!result.success) {
+    throw new TitanPartnerApiError({
+      status: 502,
+      code: "TITAN_ERROR",
+      message: "Titan balance response did not match the Order & Execution Schema.",
     });
   }
   return result.data;

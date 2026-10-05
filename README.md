@@ -2,7 +2,7 @@
 
 TevTrade is a local decision desk. A question goes to Ollama. The answer is grounded in trading rules stored in TypeDB and a SOL balance read through Helius (connected Wallet Standard wallet, or optional public `DESK_WALLET_ADDRESS`).
 
-The browser never receives `HELIUS_API_KEY`, `OLLAMA_API_KEY`, `TYPEDB_TOKEN`, `TITAN_API_KEY`, `TITAN_DCA_API_KEY`, or `TITAN_JWT`. Wallet signing stays in a Wallet Standard extension. Do not import a filesystem keypair (`id.json`) into the desk. The Quote view asks Titan for a mainnet Portal route and can stream Direct quotes. It does not sign or send the swap. Orders uses one SIWS signature to link the wallet, then intent → sign deposit → confirm.
+The browser never receives `HELIUS_API_KEY`, `OLLAMA_API_KEY`, `TYPEDB_TOKEN`, `TITAN_API_KEY`, `TITAN_DART_API_KEY`, `TITAN_DCA_API_KEY`, or `TITAN_JWT`. Wallet signing stays in a Wallet Standard extension. Do not import a filesystem keypair (`id.json`) into the desk. The Quote view asks Titan for a mainnet DART route by default (public `/dart`, 1 req/s) and can use Portal or stream Direct quotes. It does not sign or send the swap. Orders uses one SIWS signature to link the wallet, then intent → sign deposit → confirm.
 
 ## Run
 
@@ -21,7 +21,7 @@ The browser never receives `HELIUS_API_KEY`, `OLLAMA_API_KEY`, `TYPEDB_TOKEN`, `
 
 3. Open [http://localhost:3000](http://localhost:3000).
 
-The Decision view is the chat. Quote asks Titan for a Portal route and can open a Direct quote stream. Orders runs SIWS onboard plus partner intent/confirm. Desk and Analytics are placeholders until wired to your book.
+The Decision view is the chat. Quote asks Titan DART by default (or Portal when configured) and can open a Direct quote stream. Orders runs SIWS onboard plus partner intent/confirm. Desk and Analytics are placeholders until wired to your book.
 
 ## Services
 
@@ -38,7 +38,10 @@ The Decision view is the chat. Quote asks Titan for a Portal route and can open 
 | `TYPEDB_TOKEN` | Bearer token from `POST /v1/signin` (local default user `admin` / `password`). Restart the app after updating. |
 | `TYPEDB_DATABASE` | Database name. The default is `tevtrade`. |
 | `DESK_WALLET_ADDRESS` | Optional public Solana address for Decision balance when no extension wallet is connected. Never a secret key. |
-| `TITAN_API_KEY` | Titan Developers Portal key. Used only by `POST /api/titan/quote`. |
+| `TITAN_QUOTE_SOURCE` | Quote surface for `POST /api/titan/quote`. Default `dart`. Set `portal` for Developers Portal. |
+| `TITAN_DART_URL` | DART API root. Default `https://api.titan.exchange/dart`. Public access needs no key (1 req/s). |
+| `TITAN_DART_API_KEY` | Optional DART partner key (`X-API-Key`). Never send a Portal key here. |
+| `TITAN_API_KEY` | Developers Portal key. Used only when `TITAN_QUOTE_SOURCE=portal`. |
 | `TITAN_API_URL` | Portal root. The default is `https://portal.api.titan.exchange`. |
 | `TITAN_DCA_BASE_URL` | Titan DCA partner API root (no trailing slash). Used by onboard and orders proxies. |
 | `TITAN_DCA_API_KEY` | Partner key sent as `X-Titan-Key` from the server only. |

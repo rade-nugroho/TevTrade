@@ -6,6 +6,7 @@ import AppSidebar2, { DESK_SIDEBAR_ITEMS } from "@/components/blocks/app-sidebar
 import { SwapQuote } from "@/components/blocks/swap-quote";
 import { TitanDirectQuote } from "@/components/blocks/titan-direct-quote";
 import { TitanOrders } from "@/components/blocks/titan-orders";
+import { TradeAutomation } from "@/components/blocks/trade-automation";
 import { WalletPanel } from "@/components/blocks/wallet-panel";
 
 /**
@@ -59,6 +60,7 @@ export function Workspace() {
         </header>
         <main className="min-h-0 flex-1 overflow-auto">
           {view === "decision" ? <AiChat1 /> : null}
+          {view === "automation" ? <TradeAutomation /> : null}
           {view === "quote" ? (
             <>
               <SwapQuote />

@@ -3,10 +3,14 @@ import "server-only";
 import { z } from "zod";
 import { readServerEnv } from "@/lib/env";
 import {
+  formatUnits,
   TITAN_MINT_DECIMALS,
+  toSmallestUnits,
   type TitanQuoteRoute,
   type TitanQuoteView,
 } from "@/lib/titan-public";
+
+export { formatUnits, toSmallestUnits };
 
 const addressSchema = z.string().trim().regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/);
 
@@ -27,29 +31,6 @@ export const titanQuoteRequestSchema = z.object({
  * Inferred Titan quote request.
  */
 export type TitanQuoteRequest = z.infer<typeof titanQuoteRequestSchema>;
-
-/**
- * Converts a decimal amount into an integer string of smallest units.
- * Returns null when the fraction has more digits than `decimals` or the amount is zero.
- */
-export function toSmallestUnits(uiAmount: string, decimals: number): string | null {
-  const match = /^(\d+)(?:\.(\d+))?$/.exec(uiAmount.trim());
-  if (!match || (match[2]?.length ?? 0) > decimals) return null;
-  const whole = match[1].replace(/^0+(?=\d)/, "");
-  const fraction = (match[2] ?? "").padEnd(decimals, "0");
-  const units = `${whole}${fraction}`.replace(/^0+(?=\d)/, "");
-  return units === "0" ? null : units;
-}
-
-/**
- * Formats an integer string of smallest units with a fixed decimal scale.
- */
-export function formatUnits(units: string, decimals: number): string {
-  const padded = units.padStart(decimals + 1, "0");
-  const whole = padded.slice(0, padded.length - decimals).replace(/^0+(?=\d)/, "");
-  const fraction = decimals === 0 ? "" : padded.slice(padded.length - decimals).replace(/0+$/, "");
-  return fraction ? `${whole}.${fraction}` : whole;
-}
 
 /**
  * Reads a non-negative integer from a Titan JSON field.
@@ -186,6 +167,7 @@ export function toQuoteView(payload: unknown, fallbackInputDecimals: number): Ti
 
   return {
     id: parsed.id ?? null,
+    source: "portal",
     inputMint: parsed.inputMint,
     outputMint: parsed.outputMint,
     inputDecimals,
@@ -203,22 +185,127 @@ export function toQuoteView(payload: unknown, fallbackInputDecimals: number): Ti
 }
 
 /**
- * Asks Titan for a swap quote and returns the display view.
- * The API key is sent as a header and is not included in the result.
+ * DART `/swap` response fields used for display.
+ * `instructions` and `addressLookupTables` are intentionally omitted.
  */
-export async function requestTitanQuote(
+const dartSwapSchema = z.object({
+  inputAmount: z.union([z.string(), z.number()]),
+  outputAmount: z.union([z.string(), z.number()]),
+  provider: z.string().optional(),
+  slippageBps: z.number().optional(),
+});
+
+/**
+ * Maps a DART swap payload to the desk quote view.
+ * Instruction bytes and lookup tables never leave the server.
+ */
+export function toDartQuoteView(
+  payload: unknown,
+  request: Pick<TitanQuoteRequest, "inputMint" | "outputMint" | "inputDecimals">,
+): TitanQuoteView {
+  const parsed = dartSwapSchema.safeParse(payload);
+  if (!parsed.success) {
+    throw new Error("Titan DART returned a quote the desk could not read.");
+  }
+
+  const inAmount = readUnits(parsed.data.inputAmount);
+  const outAmount = readUnits(parsed.data.outputAmount);
+  if (!inAmount || !outAmount) {
+    throw new Error("Titan DART returned no usable amounts.");
+  }
+
+  const inputDecimals = decimalsFor(request.inputMint, request.inputDecimals);
+  const outputDecimals = decimalsFor(request.outputMint, 0);
+  const provider = readLabel(parsed.data.provider, "Titan-DART");
+
+  return {
+    id: null,
+    source: "dart",
+    inputMint: request.inputMint,
+    outputMint: request.outputMint,
+    inputDecimals,
+    outputDecimals,
+    inputPriceUsd: null,
+    outputPriceUsd: null,
+    recommendedProvider: provider,
+    routes: [
+      {
+        provider,
+        recommended: true,
+        inAmount,
+        outAmount,
+        inDisplay: formatUnits(inAmount, inputDecimals),
+        outDisplay: formatUnits(outAmount, outputDecimals),
+        slippageBps: readNumber(parsed.data.slippageBps),
+        steps: [],
+      },
+    ],
+  };
+}
+
+/**
+ * Asks the free public (or partner) DART endpoint for a single-route quote.
+ * Never sends `TITAN_API_KEY`. Strips instructions before returning.
+ */
+async function requestDartQuote(
   request: TitanQuoteRequest,
+  amount: string,
+  signal?: AbortSignal,
+): Promise<TitanQuoteView> {
+  const env = readServerEnv();
+  const url = `${env.titanDartUrl}/swap`;
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  };
+  // Partner DART key only — Portal keys must not be sent here.
+  // DART accepts Bearer or X-API-Key; send both for gateway compatibility.
+  if (env.titanDartApiKey) {
+    headers["Authorization"] = `Bearer ${env.titanDartApiKey}`;
+    headers["X-API-Key"] = env.titanDartApiKey;
+  }
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      inputMint: request.inputMint,
+      outputMint: request.outputMint,
+      amount,
+      userPublicKey: request.userPublicKey,
+      slippageBps: request.slippageBps ?? 50,
+    }),
+    signal,
+    cache: "no-store",
+  });
+
+  const body = await response.text();
+  if (!response.ok) {
+    throw new Error(readTitanError(response.status, body, env.titanDartApiKey ?? ""));
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(body) as unknown;
+  } catch {
+    throw new Error("Titan DART returned a response that was not JSON.");
+  }
+  return toDartQuoteView(payload, request);
+}
+
+/**
+ * Asks the Developers Portal Gateway for multi-provider quotes.
+ * Never sends `TITAN_DART_API_KEY`.
+ */
+async function requestPortalQuote(
+  request: TitanQuoteRequest,
+  amount: string,
+  inputDecimals: number,
   signal?: AbortSignal,
 ): Promise<TitanQuoteView> {
   const env = readServerEnv();
   if (!env.titanApiKey) {
-    throw new Error("Set TITAN_API_KEY to request a quote.");
-  }
-
-  const inputDecimals = decimalsFor(request.inputMint, request.inputDecimals);
-  const amount = toSmallestUnits(request.uiAmount, inputDecimals);
-  if (!amount) {
-    throw new Error("Amount must be greater than zero and fit the token decimals.");
+    throw new Error('Set TITAN_API_KEY when TITAN_QUOTE_SOURCE is "portal".');
   }
 
   const url = new URL("/api/v1/quote/swap", env.titanApiUrl);
@@ -255,17 +342,47 @@ export async function requestTitanQuote(
 }
 
 /**
- * Turns a Titan error into a short message that does not include the API key.
+ * Asks Titan for a swap quote and returns the display view.
+ * Defaults to public DART (`https://api.titan.exchange/dart`). Set
+ * `TITAN_QUOTE_SOURCE=portal` to use the Developers Portal key instead.
+ * Keys are never mixed across surfaces. Instruction bytes are stripped.
+ */
+export async function requestTitanQuote(
+  request: TitanQuoteRequest,
+  signal?: AbortSignal,
+): Promise<TitanQuoteView> {
+  const env = readServerEnv();
+  const inputDecimals = decimalsFor(request.inputMint, request.inputDecimals);
+  const amount = toSmallestUnits(request.uiAmount, inputDecimals);
+  if (!amount) {
+    throw new Error("Amount must be greater than zero and fit the token decimals.");
+  }
+
+  if (env.titanQuoteSource === "portal") {
+    return requestPortalQuote(request, amount, inputDecimals, signal);
+  }
+  return requestDartQuote(request, amount, signal);
+}
+
+/**
+ * Turns a Titan error into a short message that does not include API keys.
  */
 function readTitanError(status: number, body: string, apiKey: string): string {
-  const text = body.replaceAll(apiKey, "").replace(/[\u0000-\u001f]/g, " ").trim();
+  let text = body.replace(/[\u0000-\u001f]/g, " ").trim();
+  if (apiKey) text = text.replaceAll(apiKey, "");
   if (status === 401 || status === 403) return "Titan rejected the API key.";
-  if (status === 429) return "Titan rate limit reached. Wait a moment and try again.";
+  if (status === 429) {
+    return "Titan rate limit reached (public DART allows 1 request per second). Wait a moment and try again.";
+  }
+  if (status === 404) {
+    return "Titan found no route for this pair. DART supports a fixed mainnet market list.";
+  }
 
   try {
     const parsed = JSON.parse(text) as {
       code?: number;
       message?: string;
+      error?: string;
       metadata?: { errors?: Record<string, unknown> };
     };
     if (parsed.code === -7) {
@@ -278,8 +395,12 @@ function readTitanError(status: number, body: string, apiKey: string): string {
         ? `Titan found no route. ${reasons}`
         : "Titan found no route. Check the wallet address and the amount.";
     }
-    if (typeof parsed.message === "string" && parsed.message.trim()) {
-      return `Titan quote failed (${status}): ${parsed.message.trim().slice(0, 160)}`;
+    const detail =
+      (typeof parsed.message === "string" && parsed.message.trim()) ||
+      (typeof parsed.error === "string" && parsed.error.trim()) ||
+      "";
+    if (detail) {
+      return `Titan quote failed (${status}): ${detail.slice(0, 160)}`;
     }
   } catch {
     // Titan sometimes returns a plain-text validation error.

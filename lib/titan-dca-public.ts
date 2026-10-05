@@ -1,4 +1,38 @@
 import { z } from "zod";
+import {
+  titanBalanceRowSchema,
+  titanExecutionSchema,
+  titanMeBalanceSchema,
+  titanOrderSchema,
+  titanOrderTypeSchema,
+  type TitanOrder,
+  type TitanOrderType,
+} from "@/lib/titan-order-schema";
+
+export {
+  formatAtomAmount,
+  formatFixedPointPrice,
+  liveTriggerPrice,
+  parseTitanOrder,
+  titanBalanceRowSchema,
+  titanExecutionSchema,
+  titanMeBalanceSchema,
+  titanOrderSchema,
+  titanOrderStatusSchema,
+  titanOrderTypeSchema,
+  titanSliceChunkSchema,
+  titanSliceDetailSchema,
+  titanWithdrawalStatusSchema,
+  type TitanBalanceRow,
+  type TitanExecution,
+  type TitanMeBalance,
+  type TitanOrder,
+  type TitanOrderStatus,
+  type TitanOrderType,
+  type TitanSliceChunk,
+  type TitanSliceDetail,
+  type TitanWithdrawalStatus,
+} from "@/lib/titan-order-schema";
 
 /**
  * Solana base58 address used by Titan partner routes.
@@ -19,25 +53,8 @@ export const titanSubSchema = z
   .regex(/^[1-9A-HJ-NP-Za-km-z:_-]{1,128}$/);
 
 /**
- * Supported Titan partner order types.
- */
-export const titanOrderTypeSchema = z.enum([
-  "dca",
-  "stop_loss",
-  "take_profit",
-  "oco",
-  "slice",
-]);
-
-/**
- * Inferred Titan order type.
- */
-export type TitanOrderType = z.infer<typeof titanOrderTypeSchema>;
-
-/**
- * Unverified per-type order config.
- * Public Titan partner docs in this repo do not list authoritative field names,
- * so the desk accepts a JSON object and does not invent typed DCA fields.
+ * Unverified per-type order config posted on intent.
+ * Create-time `config` shapes live in Titan Order Types docs; the desk forwards JSON.
  */
 export const titanOrderConfigSchema = z.record(z.string(), z.unknown());
 
@@ -106,6 +123,7 @@ export type TitanOrderIntentRequest = z.infer<typeof titanOrderIntentRequestSche
 
 /**
  * Intent preview fields shown before the user signs the deposit.
+ * Amounts are integer strings in smallest units when Titan returns them as strings.
  */
 export const titanOrderIntentResultSchema = z.object({
   pendingOrderId: z.string().min(1),
@@ -116,8 +134,8 @@ export const titanOrderIntentResultSchema = z.object({
   orderType: titanOrderTypeSchema.or(z.string()),
   outputRecipientAddress: z.string().optional(),
   inputMint: z.string().optional(),
-  inputAmount: z.union([z.string(), z.number()]).optional(),
-  feeLamports: z.union([z.string(), z.number()]),
+  inputAmount: z.union([z.string().regex(/^\d+$/), z.number().int().nonnegative()]).optional(),
+  feeLamports: z.union([z.string().regex(/^\d+$/), z.number().int().nonnegative()]),
 });
 
 /**
@@ -144,16 +162,28 @@ export type TitanOrderConfirmRequest = z.infer<typeof titanOrderConfirmRequestSc
  * Confirm response fields shown after activation.
  */
 export const titanOrderConfirmResultSchema = z.object({
-  order: z.unknown(),
+  order: titanOrderSchema.or(z.unknown()),
   txSignature: z.string().optional(),
   orderId: z.string().optional(),
   status: z.string().optional(),
+  pendingOrderId: z.string().optional(),
 });
 
 /**
  * Inferred confirm result.
  */
 export type TitanOrderConfirmResult = z.infer<typeof titanOrderConfirmResultSchema>;
+
+/**
+ * Narrows confirm `order` to the typed Order when the payload matches.
+ *
+ * @param result - Confirm API response.
+ * @returns Typed order or null.
+ */
+export function confirmResultOrder(result: TitanOrderConfirmResult): TitanOrder | null {
+  const parsed = titanOrderSchema.safeParse(result.order);
+  return parsed.success ? parsed.data : null;
+}
 
 /**
  * Deposit lookup response.
@@ -167,6 +197,45 @@ export const titanOrderDepositResultSchema = z.object({
  * Inferred deposit result.
  */
 export type TitanOrderDepositResult = z.infer<typeof titanOrderDepositResultSchema>;
+
+/**
+ * Normalizes a Titan orders list payload into `{ orders }`.
+ * Accepts a bare array (`GET /me/orders`) or `{ orders }` / `{ items }`.
+ */
+export const titanOrdersListResultSchema = z.preprocess((raw) => {
+  if (Array.isArray(raw)) return { orders: raw };
+  if (raw && typeof raw === "object") {
+    const row = raw as { orders?: unknown; items?: unknown };
+    if (Array.isArray(row.orders)) return { orders: row.orders };
+    if (Array.isArray(row.items)) return { orders: row.items };
+  }
+  return raw;
+}, z.object({ orders: z.array(titanOrderSchema) }));
+
+/**
+ * Inferred orders list.
+ */
+export type TitanOrdersListResult = z.infer<typeof titanOrdersListResultSchema>;
+
+/**
+ * Partner balance payload alias for desk reads (`GET /me/balance`).
+ */
+export const titanMeBalanceResultSchema = titanMeBalanceSchema;
+
+/**
+ * Inferred me/balance result.
+ */
+export type TitanMeBalanceResult = z.infer<typeof titanMeBalanceResultSchema>;
+
+/**
+ * Stable id for a Titan order row.
+ *
+ * @param order - Typed order.
+ * @returns Opaque order id.
+ */
+export function titanOrderId(order: TitanOrder): string {
+  return order.id;
+}
 
 /**
  * Titan error payload surfaced to the UI.
@@ -248,3 +317,6 @@ export function writeTitanSession(session: TitanSession): void {
 export function buildOrderIdempotencyKey(orderType: TitanOrderType, attemptId: string): string {
   return `${orderType}:create:${attemptId}:v1`;
 }
+
+void titanBalanceRowSchema;
+void titanExecutionSchema;

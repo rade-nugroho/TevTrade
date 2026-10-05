@@ -46,7 +46,7 @@ fetch {
 /**
  * A trading rule read from TypeDB.
  */
-type TradingRule = {
+export type TradingRule = {
   readonly topic: string;
   readonly stance: string;
   readonly rationale: string;
@@ -60,18 +60,29 @@ export type DecisionFacts = {
   readonly summary: string;
 };
 
+/**
+ * Structured rule-book payload for Desk Analytics.
+ */
+export type TradingRulesResult = {
+  readonly status: "ok" | "unconfigured" | "empty" | "error";
+  readonly summary: string;
+  readonly rules: readonly TradingRule[];
+};
+
 let ruleBookReady: Promise<void> | null = null;
 
 /**
- * Reads the local rule book. Missing configuration does not throw.
+ * Reads the local rule book with structured rows for Analytics.
+ * Missing configuration does not throw.
  */
-export async function readDecisionFacts(): Promise<DecisionFacts> {
+export async function listTradingRules(): Promise<TradingRulesResult> {
   const { typedbUrl, typedbToken } = readServerEnv();
   if (!typedbUrl) {
     return {
       status: "unconfigured",
       summary:
         "TypeDB is not configured. Set TYPEDB_URL to the HTTP root (for example http://127.0.0.1:8000) and TYPEDB_TOKEN from POST /v1/signin.",
+      rules: [],
     };
   }
   if (!typedbToken) {
@@ -79,6 +90,7 @@ export async function readDecisionFacts(): Promise<DecisionFacts> {
       status: "unconfigured",
       summary:
         "TYPEDB_URL is set, but TYPEDB_TOKEN is missing. With TypeDB running locally, run POST /v1/signin (default admin credentials) and set the returned bearer token.",
+      rules: [],
     };
   }
 
@@ -86,21 +98,33 @@ export async function readDecisionFacts(): Promise<DecisionFacts> {
     await ensureRuleBook();
     const rules = await fetchRules();
     if (rules.length === 0) {
-      return { status: "empty", summary: "TypeDB returned no trading rules." };
+      return { status: "empty", summary: "TypeDB returned no trading rules.", rules: [] };
     }
     const summary = rules
       .map((rule) => `- ${rule.topic}: ${rule.stance} ${rule.rationale}`)
       .join("\n")
       .slice(0, 4_000);
-    return { status: "ok", summary };
+    return { status: "ok", summary, rules };
   } catch (error) {
     const message = error instanceof Error ? error.message : "TypeDB request failed.";
     const authHint =
       /aut|token|bearer|unauthorized|401/i.test(message)
         ? " Refresh TYPEDB_TOKEN with POST /v1/signin."
         : "";
-    return { status: "error", summary: `TypeDB is unavailable. ${message}${authHint}` };
+    return {
+      status: "error",
+      summary: `TypeDB is unavailable. ${message}${authHint}`,
+      rules: [],
+    };
   }
+}
+
+/**
+ * Reads the local rule book. Missing configuration does not throw.
+ */
+export async function readDecisionFacts(): Promise<DecisionFacts> {
+  const result = await listTradingRules();
+  return { status: result.status, summary: result.summary };
 }
 
 /**

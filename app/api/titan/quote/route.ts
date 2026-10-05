@@ -4,7 +4,8 @@ export const dynamic = "force-dynamic";
 
 /**
  * Proxies a Titan swap quote.
- * The API key stays on the server. The response lists routes and omits instruction bytes.
+ * Defaults to public DART (`api.titan.exchange/dart`). Set `TITAN_QUOTE_SOURCE=portal`
+ * for Developers Portal. Secrets stay on the server. Instruction bytes are stripped.
  */
 export async function POST(request: Request) {
   let body: unknown;
