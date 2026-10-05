@@ -21,7 +21,7 @@ The browser never receives `HELIUS_API_KEY`, `OLLAMA_API_KEY`, `TYPEDB_TOKEN`, `
 
 3. Open [http://localhost:3000](http://localhost:3000).
 
-The Decision view is the chat. **Automation** runs Tev1 + TypeDB stance, then either a DART spot quote (with routes / expectedWinner) or a Special Order intent (`dca`, `stop_loss`, `take_profit`), and always waits for human Approve before any Wallet Standard sign. Quote asks Titan DART by default (or Portal when configured) and can open a Direct quote stream. Bridge opens Wormhole Connect (Testnet on Solana devnet/testnet, Mainnet on mainnet; gated off on localnet). Orders runs SIWS onboard plus partner intent/confirm. Desk shows wallet SOL, partner positions/fills (`amountSpent` / `amountReceived`, DCA cycles, `currentTriggerPrice`, `availableToWithdraw`) when `TITAN_DCA_*` is set. Analytics shows session counts, personal spent→received fills, and the TypeDB rule book — honest empty states when data is missing.
+The Decision view is the chat. **Automation** is the enabled decision→quote/intent→approve path: Tev1 + TypeDB stance, then either a DART spot quote (routes / expectedWinner, unsigned V0 simulate before Approve) or a Special Order intent (`dca`, `stop_loss`, `take_profit`, `oco`, `slice`), always waiting for human Approve before any Wallet Standard sign. Quote asks Titan DART by default (or Portal when configured) and can open a Direct quote stream. Bridge opens Wormhole Connect (Testnet on Solana devnet/testnet, Mainnet on mainnet; gated off on localnet). Orders runs SIWS onboard plus partner intent/confirm (raw JSON). Desk shows wallet SOL, partner positions/fills, and pause/resume/cancel/withdraw with the same Approve gate when `TITAN_DCA_*` is set. Analytics shows session counts, personal spent→received fills, and the TypeDB rule book — honest empty states when data is missing.
 
 ### Automation path (enabled when you approve)
 
@@ -29,11 +29,15 @@ The Decision view is the chat. **Automation** runs Tev1 + TypeDB stance, then ei
 | --- | --- | --- |
 | Decision | Tev1 letter → stance (`add` advances) | Ollama + TypeDB |
 | Spot quote | `POST /api/titan/quote` with `includeInstructions` | Public DART (or Portal key) |
+| Spot simulate | Build unsigned V0 + `simulateTransaction` (`sigVerify=false`) on desk RPC | Cluster RPC; mainnet ALTs needed for a green sim |
 | Spot approve → execute | V0 tx from DART instructions + ALTs; Wallet Standard sign/send | `NEXT_PUBLIC_SOLANA_CLUSTER=solana:mainnet` **or** explicit “target quote chain”; mainnet-funded wallet |
-| Order intent | `dca` / `stop_loss` / `take_profit` config → partner intent | `TITAN_DCA_BASE_URL` + `TITAN_DCA_API_KEY` |
+| Order intent | `dca` / `stop_loss` / `take_profit` / `oco` / `slice` config → partner intent | `TITAN_DCA_BASE_URL` + `TITAN_DCA_API_KEY` |
 | Order approve → confirm | Wallet Standard signs deposit; server confirms | Same partner keys + connected wallet |
+| Lifecycle | Desk pause/resume/cancel/withdraw → Approve if unsigned tx | Same partner keys + connected wallet |
 
-Still blocked without partner credentials: live Special Order intent/confirm (`TITAN_DCA_*` empty in `.env`). Full mainnet spot send also needs a mainnet Wallet Standard wallet and cluster (or explicit quote-chain targeting with an RPC that can submit mainnet txs).
+**Unlock live send (single user action):** set `NEXT_PUBLIC_SOLANA_CLUSTER=solana:mainnet` (or check “target quote chain” on a non-mainnet desk) and connect a funded mainnet Wallet Standard wallet, then Approve. For Special Orders / lifecycle, also set `TITAN_DCA_BASE_URL` + `TITAN_DCA_API_KEY` (server-only).
+
+Still blocked without partner credentials: live Special Order intent/confirm/lifecycle (`TITAN_DCA_*` empty in `.env`). Full mainnet spot send also needs a mainnet Wallet Standard wallet and cluster (or explicit quote-chain targeting with an RPC that can submit mainnet txs).
 
 ## Services
 
@@ -74,6 +78,7 @@ Still blocked without partner credentials: live Special Order intent/confirm (`T
 
 - **SIWS onboard** — Connect a wallet, click Link Titan. The desk uses the wallet pubkey as `sub`, builds the canonical SIWS message, signs it, and posts to `POST /api/titan/onboard`. Safe to call on every login.
 - **Orders** — `POST /api/titan/orders/intent` (optional `onboardIfNeeded: true`) returns a deposit tx and `feeLamports`. Sign and `POST /api/titan/orders/confirm`. On `409 USER_PUBKEY_CONFLICT`, the UI runs SIWS then re-intents without the flag. Idempotency keys are reuse-safe for the same body.
+- **Lifecycle** — `POST /api/titan/orders/:orderId/lifecycle` with `{ sub, action }` proxies pause/resume/cancel/withdraw. Desk shows Approve before Wallet Standard signs any returned unsigned tx.
 - **Direct quotes** — `POST /api/titan/direct/price` and `POST /api/titan/direct/stream` keep the JWT on the server.
 
 On the first decision, TevTrade creates the TypeDB database when it is missing, defines `trading-rule`, and inserts three seed rules: position size, uncertainty, and signing.

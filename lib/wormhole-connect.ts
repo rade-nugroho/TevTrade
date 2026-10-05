@@ -30,15 +30,16 @@ export type WormholeRpcEnv = z.infer<typeof wormholeRpcEnvSchema>;
  * @returns Partial RPC map for Connect `rpcs`.
  */
 export function readWormholeRpcEnv(): WormholeRpcEnv {
-  return wormholeRpcEnvSchema.parse({
-    solana:
-      process.env.NEXT_PUBLIC_WORMHOLE_RPC_SOLANA ||
-      process.env.NEXT_PUBLIC_SOLANA_RPC_URL ||
-      undefined,
-    ethereum: process.env.NEXT_PUBLIC_WORMHOLE_RPC_ETHEREUM || undefined,
-    base: process.env.NEXT_PUBLIC_WORMHOLE_RPC_BASE || undefined,
-    arbitrum: process.env.NEXT_PUBLIC_WORMHOLE_RPC_ARBITRUM || undefined,
-  });
+  const urlOrUndefined = (value: string | undefined): string | undefined =>
+    value && wormholeRpcEnvSchema.shape.solana.safeParse(value).success ? value : undefined;
+  return {
+    solana: urlOrUndefined(
+      process.env.NEXT_PUBLIC_WORMHOLE_RPC_SOLANA || process.env.NEXT_PUBLIC_SOLANA_RPC_URL,
+    ),
+    ethereum: urlOrUndefined(process.env.NEXT_PUBLIC_WORMHOLE_RPC_ETHEREUM),
+    base: urlOrUndefined(process.env.NEXT_PUBLIC_WORMHOLE_RPC_BASE),
+    arbitrum: urlOrUndefined(process.env.NEXT_PUBLIC_WORMHOLE_RPC_ARBITRUM),
+  };
 }
 
 /**

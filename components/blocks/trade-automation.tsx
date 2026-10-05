@@ -238,6 +238,7 @@ export function TradeAutomation() {
   const [deskAddress, setDeskAddress] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [approvalNote, setApprovalNote] = useState<string | null>(null);
+  const [simulation, setSimulation] = useState<DartSimulationResult | null>(null);
   const [attemptId, setAttemptId] = useState(() => crypto.randomUUID());
   const abortRef = useRef<AbortController | null>(null);
 
@@ -340,6 +341,7 @@ export function TradeAutomation() {
     setIntent(null);
     setConfirmedOrder(null);
     setConfirmMeta(null);
+    setSimulation(null);
     setPhase("deciding");
 
     try {
@@ -384,6 +386,25 @@ export function TradeAutomation() {
         }
         setQuote(payload);
         setQuotedFor(address);
+
+        if (payload.execution && payload.execution.instructions.length > 0) {
+          setPhase("simulating");
+          const feePayer = connected?.signer ?? address;
+          const sim = await simulateDartSwap(client, feePayer, payload.execution);
+          if (controller.signal.aborted) {
+            setPhase("idle");
+            return;
+          }
+          setSimulation(sim);
+        } else {
+          setSimulation({
+            ok: false,
+            unitsConsumed: null,
+            logs: [],
+            err: "no_execution",
+            note: "No executable instructions on this quote — Approve records gate-only approval.",
+          });
+        }
         setPhase("awaiting_approval");
         return;
       }
@@ -528,11 +549,29 @@ export function TradeAutomation() {
   const busy =
     phase === "deciding" ||
     phase === "quoting" ||
+    phase === "simulating" ||
     phase === "intenting" ||
     phase === "signing" ||
     phase === "executing" ||
     phase === "confirming";
   const recommended = quote?.routes.find((route) => route.recommended) ?? quote?.routes[0] ?? null;
+  const flowSteps = flowStepLabels(form.track);
+  const activeFlowIndex =
+    phase === "idle" || phase === "error" || phase === "rejected"
+      ? -1
+      : phase === "deciding" || phase === "decided"
+        ? 0
+        : phase === "quoting" || phase === "intenting"
+          ? 1
+          : phase === "simulating"
+            ? 2
+            : phase === "awaiting_approval"
+              ? form.track === "spot"
+                ? 3
+                : 2
+              : form.track === "spot"
+                ? 3
+                : 2;
   const inputDecimals = form.inputDecimals;
   const intentAmount =
     intent?.inputAmount !== undefined
@@ -548,10 +587,27 @@ export function TradeAutomation() {
           Trade Automation
         </h1>
         <p className="mt-1 text-xs leading-5 text-neutral-500">
-          Decision (Tev1 + TypeDB) → {trackLabel(form.track)} → explicit approve before any sign.
-          Spot uses DART/Portal quotes. Orders use Special Order Types intent → confirm. Never{" "}
+          Enabled path: Decision (Tev1 + TypeDB) → {trackLabel(form.track)}
+          {form.track === "spot" ? " → simulate unsigned V0" : ""} → explicit Approve before any
+          Wallet Standard sign. Pause/resume/cancel/withdraw live on Desk. Never{" "}
           <span className="font-mono">id.json</span>.
         </p>
+        <ol className="mt-3 flex flex-wrap gap-2" aria-label="Automation flow">
+          {flowSteps.map((label, index) => (
+            <li
+              key={label}
+              className={
+                index === activeFlowIndex
+                  ? "rounded-[var(--rb-r-md,8px)] bg-neutral-900 px-2 py-1 text-[11px] font-medium text-white dark:bg-neutral-100 dark:text-neutral-900"
+                  : index < activeFlowIndex
+                    ? "rounded-[var(--rb-r-md,8px)] border border-neutral-300 px-2 py-1 text-[11px] text-neutral-700 dark:border-neutral-700 dark:text-neutral-300"
+                    : "rounded-[var(--rb-r-md,8px)] border border-neutral-200 px-2 py-1 text-[11px] text-neutral-400 dark:border-neutral-800"
+              }
+            >
+              {label}
+            </li>
+          ))}
+        </ol>
       </div>
 
       <form
@@ -681,6 +737,30 @@ export function TradeAutomation() {
               className="h-9 rounded-[var(--rb-r-md,8px)] border border-neutral-200 bg-white px-2 text-sm text-neutral-900 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100"
             />
           </label>
+        ) : form.orderType === "oco" ? (
+          <label className="flex flex-col gap-1 text-xs text-neutral-500">
+            Stop-loss price
+            <input
+              value={form.stopLossPriceUi}
+              onChange={(event) =>
+                setForm((current) => ({ ...current, stopLossPriceUi: event.target.value }))
+              }
+              inputMode="decimal"
+              className="h-9 rounded-[var(--rb-r-md,8px)] border border-neutral-200 bg-white px-2 text-sm text-neutral-900 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100"
+            />
+          </label>
+        ) : form.orderType === "slice" ? (
+          <label className="flex flex-col gap-1 text-xs text-neutral-500">
+            Executions (chunks)
+            <input
+              value={form.executionsTotal}
+              onChange={(event) =>
+                setForm((current) => ({ ...current, executionsTotal: event.target.value }))
+              }
+              inputMode="numeric"
+              className="h-9 rounded-[var(--rb-r-md,8px)] border border-neutral-200 bg-white px-2 text-sm text-neutral-900 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100"
+            />
+          </label>
         ) : (
           <label className="flex flex-col gap-1 text-xs text-neutral-500">
             Trigger price
@@ -721,6 +801,74 @@ export function TradeAutomation() {
               />
             </label>
           </>
+        ) : null}
+
+        {form.track === "order" && form.orderType === "oco" ? (
+          <>
+            <label className="flex flex-col gap-1 text-xs text-neutral-500">
+              Take-profit price
+              <input
+                value={form.takeProfitPriceUi}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, takeProfitPriceUi: event.target.value }))
+                }
+                inputMode="decimal"
+                className="h-9 rounded-[var(--rb-r-md,8px)] border border-neutral-200 bg-white px-2 text-sm text-neutral-900 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-neutral-500">
+              Price decimals
+              <input
+                value={form.priceDecimals}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, priceDecimals: event.target.value }))
+                }
+                inputMode="numeric"
+                className="h-9 rounded-[var(--rb-r-md,8px)] border border-neutral-200 bg-white px-2 text-sm text-neutral-900 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-neutral-500">
+              Price basis
+              <select
+                value={form.priceBasis}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    priceBasis: event.target.value as AutomationPriceBasis,
+                  }))
+                }
+                className="h-9 rounded-[var(--rb-r-md,8px)] border border-neutral-200 bg-white px-2 text-sm text-neutral-900 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100"
+              >
+                <option value="pair">pair (out per in)</option>
+                <option value="usd">usd (USD per input)</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-neutral-500">
+              Min output (optional)
+              <input
+                value={form.minOutputUi}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, minOutputUi: event.target.value }))
+                }
+                inputMode="decimal"
+                className="h-9 rounded-[var(--rb-r-md,8px)] border border-neutral-200 bg-white px-2 text-sm text-neutral-900 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100"
+              />
+            </label>
+          </>
+        ) : null}
+
+        {form.track === "order" && form.orderType === "slice" ? (
+          <label className="flex flex-col gap-1 text-xs text-neutral-500">
+            Min gap (seconds)
+            <input
+              value={form.minGapSeconds}
+              onChange={(event) =>
+                setForm((current) => ({ ...current, minGapSeconds: event.target.value }))
+              }
+              inputMode="numeric"
+              className="h-9 rounded-[var(--rb-r-md,8px)] border border-neutral-200 bg-white px-2 text-sm text-neutral-900 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100"
+            />
+          </label>
         ) : null}
 
         {form.track === "order" &&
@@ -815,9 +963,11 @@ export function TradeAutomation() {
               ? "Deciding…"
               : phase === "quoting"
                 ? "Quoting…"
-                : phase === "intenting"
-                  ? "Creating intent…"
-                  : "Run automation"}
+                : phase === "simulating"
+                  ? "Simulating…"
+                  : phase === "intenting"
+                    ? "Creating intent…"
+                    : "Run automation"}
           </button>
           {busy ? (
             <button
@@ -922,12 +1072,40 @@ export function TradeAutomation() {
         </div>
       ) : null}
 
+      {simulation && form.track === "spot" ? (
+        <div
+          className={
+            simulation.ok
+              ? "rounded-[var(--rb-r-md,8px)] border border-emerald-200/80 px-3 py-3 dark:border-emerald-900/50"
+              : "rounded-[var(--rb-r-md,8px)] border border-amber-200/80 px-3 py-3 dark:border-amber-900/50"
+          }
+        >
+          <p className="text-xs text-neutral-500">
+            Pre-approve simulation {simulation.ok ? "ok" : "failed / skipped"}
+            {simulation.unitsConsumed !== null ? ` · ${simulation.unitsConsumed} CU` : ""}
+          </p>
+          <p className="mt-1 text-xs leading-5 text-neutral-700 dark:text-neutral-300">
+            {simulation.note}
+          </p>
+          {simulation.err ? (
+            <p className="mt-1 font-mono text-[11px] text-amber-800 dark:text-amber-200">
+              {simulation.err}
+            </p>
+          ) : null}
+          {simulation.logs.length > 0 ? (
+            <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap font-mono text-[10px] leading-4 text-neutral-500">
+              {simulation.logs.join("\n")}
+            </pre>
+          ) : null}
+        </div>
+      ) : null}
+
       {phase === "awaiting_approval" ? (
         <div className="flex flex-col gap-3 rounded-[var(--rb-r-md,8px)] border border-amber-200/80 bg-amber-50/50 px-3 py-3 dark:border-amber-900/50 dark:bg-amber-950/20">
           <p className="text-xs leading-5 text-neutral-700 dark:text-neutral-300">
             {form.track === "order"
               ? "Human approval required before Wallet Standard signs the deposit. Review recipient, amount, fee, and expiry above."
-              : "Human approval required. Approving builds a V0 transaction from this route and asks your wallet to sign and send. Never id.json."}
+              : "Human approval required after simulation. Approving builds a V0 transaction from this route and asks your wallet to sign and send. Never id.json."}
           </p>
           {form.track === "spot" && !clusterAllowsDartSend(SOLANA_CHAIN) ? (
             <label className="flex items-start gap-2 text-xs leading-5 text-amber-800 dark:text-amber-200">

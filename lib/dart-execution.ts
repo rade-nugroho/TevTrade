@@ -166,12 +166,8 @@ export async function simulateDartSwap(
   }
 
   try {
-    const payer =
-      typeof feePayer === "string"
-        ? address(feePayer)
-        : "address" in feePayer && typeof feePayer.address === "string"
-          ? feePayer
-          : (feePayer as Address);
+    const payer: TransactionSigner | Address =
+      typeof feePayer === "string" ? address(feePayer) : feePayer;
     const message = await buildDartMessage(client, payer, execution);
     const compiled = compileTransaction(message);
     const wire = getBase64EncodedWireTransaction(compiled);

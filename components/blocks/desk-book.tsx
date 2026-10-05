@@ -2,7 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useConnectedWallet } from "@solana/kit-plugin-wallet/react";
-import { address as solanaAddress } from "@solana/kit";
+import {
+  address as solanaAddress,
+  getBase64EncodedWireTransaction,
+  getBase64Encoder,
+  getTransactionDecoder,
+} from "@solana/kit";
 import { useClient, useRequest } from "@solana/react";
 import { DeskEmpty, DeskField, DeskSection } from "@/components/blocks/desk-section";
 import type { AppClient } from "@/lib/client";
@@ -19,14 +24,33 @@ import {
   type DeskFill,
 } from "@/lib/desk-book";
 import {
+  buildLifecycleIdempotencyKey,
   formatAtomAmount,
   titanOrderId,
   titanSubFromWallet,
   type TitanMeBalanceResult,
   type TitanOrder,
+  type TitanOrderLifecycleAction,
+  type TitanOrderLifecycleResult,
 } from "@/lib/titan-dca-public";
 import { mintLabel } from "@/lib/titan-public";
 import { formatSol, readLamports, SOLANA_CHAIN, solanaClusterLabel } from "@/lib/solana-cluster";
+
+const LIFECYCLE_ACTIONS: readonly TitanOrderLifecycleAction[] = [
+  "pause",
+  "resume",
+  "cancel",
+  "withdraw",
+];
+
+/**
+ * Pending lifecycle mutation waiting for human Approve before any sign.
+ */
+type PendingLifecycle = {
+  readonly orderId: string;
+  readonly result: TitanOrderLifecycleResult;
+  readonly attemptId: string;
+};
 
 /**
  * Public RPC status from `GET /api/rpc`.
@@ -54,6 +78,9 @@ export function DeskBook() {
   const [balance, setBalance] = useState<TitanMeBalanceResult | null>(null);
   const [balanceStatus, setBalanceStatus] = useState<DeskBookStatus>("idle");
   const [balanceMessage, setBalanceMessage] = useState<string | undefined>();
+  const [lifecyclePending, setLifecyclePending] = useState<PendingLifecycle | null>(null);
+  const [lifecycleBusy, setLifecycleBusy] = useState(false);
+  const [lifecycleNote, setLifecycleNote] = useState<string | null>(null);
 
   const deskAddress = rpcStatus?.deskWalletAddress ?? null;
   const walletAddress = connected?.account.address ?? deskAddress ?? undefined;
@@ -132,6 +159,90 @@ export function DeskBook() {
     void refreshBook();
   }, [refreshBook]);
 
+  /**
+   * Requests a partner lifecycle mutation and holds any unsigned tx for Approve.
+   */
+  async function requestLifecycle(orderId: string, action: TitanOrderLifecycleAction) {
+    if (!sub) return;
+    setLifecycleBusy(true);
+    setLifecycleNote(null);
+    setLifecyclePending(null);
+    const attemptId = crypto.randomUUID();
+    try {
+      const response = await fetch(`/api/titan/orders/${encodeURIComponent(orderId)}/lifecycle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sub,
+          action,
+          idempotencyKey: buildLifecycleIdempotencyKey(action, orderId, attemptId),
+        }),
+      });
+      const payload = (await response.json()) as TitanOrderLifecycleResult | { error?: string; code?: string };
+      if (!response.ok || !("action" in payload)) {
+        throw new Error(
+          "error" in payload && payload.error
+            ? `${payload.code ? `${payload.code}: ` : ""}${payload.error}`
+            : "Lifecycle request failed. Set TITAN_DCA_BASE_URL and TITAN_DCA_API_KEY.",
+        );
+      }
+      if (payload.transaction) {
+        setLifecyclePending({ orderId, result: payload, attemptId });
+        setLifecycleNote(
+          `${action} returned an unsigned transaction. Approve to sign with Wallet Standard, or Reject.`,
+        );
+      } else {
+        setLifecycleNote(
+          `${action} applied without a deposit tx${payload.status ? ` · status ${payload.status}` : ""}. Nothing signed.`,
+        );
+        void refreshBook();
+      }
+    } catch (caught) {
+      setLifecycleNote(caught instanceof Error ? caught.message : "Lifecycle request failed.");
+    } finally {
+      setLifecycleBusy(false);
+    }
+  }
+
+  /**
+   * Signs the pending lifecycle transaction after explicit Approve, then submits
+   * the signed wire transaction through the configured cluster RPC.
+   */
+  async function approveLifecycle() {
+    if (!lifecyclePending?.result.transaction) return;
+    const signer = connected?.signer;
+    if (!signer || !("modifyAndSignTransactions" in signer)) {
+      setLifecycleNote("Connect a Wallet Standard wallet that can sign versioned transactions.");
+      return;
+    }
+    setLifecycleBusy(true);
+    try {
+      const txBytes = getBase64Encoder().encode(lifecyclePending.result.transaction);
+      const transaction = getTransactionDecoder().decode(txBytes);
+      const [signed] = await signer.modifyAndSignTransactions([transaction]);
+      const wire = getBase64EncodedWireTransaction(signed);
+      const signature = await client.rpc
+        .sendTransaction(wire, { encoding: "base64", skipPreflight: false })
+        .send();
+      setLifecycleNote(
+        `${lifecyclePending.result.action} signed with Wallet Standard and submitted. Signature: ${signature}. No filesystem keypair was used.`,
+      );
+      setLifecyclePending(null);
+      void refreshBook();
+    } catch (caught) {
+      setLifecycleNote(
+        `Sign failed: ${caught instanceof Error ? caught.message : "unknown error"}. Approve again or Reject.`,
+      );
+    } finally {
+      setLifecycleBusy(false);
+    }
+  }
+
+  function rejectLifecycle() {
+    setLifecyclePending(null);
+    setLifecycleNote("Rejected. No lifecycle transaction was signed.");
+  }
+
   const providerLabel =
     rpcStatus?.provider === "helius"
       ? "Helius"
@@ -149,7 +260,8 @@ export function DeskBook() {
             Desk
           </h1>
           <p className="mt-1 text-[13px] leading-relaxed text-neutral-500">
-            Positions and fills from your partner book. Create new orders in Orders.
+            Positions and fills from your partner book. Create in Automation/Orders. Lifecycle
+            mutations (pause/resume/cancel/withdraw) require Approve before any sign.
           </p>
         </div>
         <button
@@ -245,11 +357,53 @@ export function DeskBook() {
                     <DeskField label="Withdraw" value={order.withdrawalStatus} />
                     <DeskField label="Id" mono value={order.id} />
                   </dl>
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {LIFECYCLE_ACTIONS.map((action) => (
+                      <button
+                        key={action}
+                        type="button"
+                        disabled={lifecycleBusy || !connected?.signer}
+                        onClick={() => void requestLifecycle(order.id, action)}
+                        className="rounded-[var(--rb-r-md,8px)] border border-neutral-200 px-2 py-1 text-[11px] text-neutral-700 disabled:opacity-40 dark:border-neutral-800 dark:text-neutral-300"
+                      >
+                        {action}
+                      </button>
+                    ))}
+                  </div>
                 </li>
               );
             })}
           </ul>
         )}
+        {lifecycleNote ? (
+          <p className="mt-3 text-xs leading-5 text-neutral-600 dark:text-neutral-400">{lifecycleNote}</p>
+        ) : null}
+        {lifecyclePending?.result.transaction ? (
+          <div className="mt-3 flex flex-col gap-2 rounded-[var(--rb-r-md,8px)] border border-amber-200/80 bg-amber-50/50 px-3 py-3 dark:border-amber-900/50 dark:bg-amber-950/20">
+            <p className="text-xs text-neutral-700 dark:text-neutral-300">
+              Approve {lifecyclePending.result.action} for order {lifecyclePending.orderId}? Wallet
+              Standard will sign the unsigned partner tx. Never id.json.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={lifecycleBusy}
+                onClick={() => void approveLifecycle()}
+                className="h-8 rounded-[var(--rb-r-md,8px)] bg-neutral-900 px-3 text-[12px] font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+              >
+                Approve & sign
+              </button>
+              <button
+                type="button"
+                disabled={lifecycleBusy}
+                onClick={rejectLifecycle}
+                className="h-8 rounded-[var(--rb-r-md,8px)] border border-neutral-300 px-3 text-[12px] text-neutral-800 dark:border-neutral-700 dark:text-neutral-200"
+              >
+                Reject
+              </button>
+            </div>
+          </div>
+        ) : null}
       </DeskSection>
 
       <DeskSection title="Fills" description="Executions list: inputAmount → outputAmount per cycle/trigger.">
