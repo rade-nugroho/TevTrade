@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   useConnect,
   useConnectedWallet,
@@ -10,7 +10,7 @@ import {
   WalletReadyGate,
 } from "@solana/kit-plugin-wallet/react";
 import { address as solanaAddress } from "@solana/kit";
-import { useClient } from "@solana/react";
+import { useClient, useRequest } from "@solana/react";
 import type { AppClient } from "@/lib/client";
 import { formatSol, readLamports, SOLANA_CHAIN, solanaClusterLabel } from "@/lib/solana-cluster";
 
@@ -54,8 +54,20 @@ function WalletControls({ client }: { client: AppClient }) {
   const connect = useConnect(client);
   const disconnect = useDisconnect(client);
   const [rpcStatus, setRpcStatus] = useState<RpcStatus | null>(null);
-  const [balance, setBalance] = useState<string | null>(null);
   const canSignV1 = connected?.supportedTransactionVersions.has(1) ?? false;
+  const walletAddress = connected?.account.address;
+  const balanceSource = useMemo(
+    () =>
+      walletAddress
+        ? client.rpc.getBalance(solanaAddress(walletAddress), { commitment: "confirmed" })
+        : null,
+    [client, walletAddress],
+  );
+  const balanceRequest = useRequest(balanceSource, {
+    getAbortSignal: () => AbortSignal.timeout(8_000),
+  });
+  const lamports = readLamports(balanceRequest.data);
+  const balance = lamports === null ? null : formatSol(lamports);
 
   useEffect(() => {
     let cancelled = false;
@@ -72,28 +84,6 @@ function WalletControls({ client }: { client: AppClient }) {
     };
   }, []);
 
-  useEffect(() => {
-    const walletAddress = connected?.account.address;
-    if (!walletAddress) {
-      setBalance(null);
-      return;
-    }
-    let cancelled = false;
-    void client.rpc
-      .getBalance(solanaAddress(walletAddress))
-      .send()
-      .then((result) => {
-        const lamports = readLamports(result);
-        if (!cancelled) setBalance(lamports === null ? null : formatSol(lamports));
-      })
-      .catch(() => {
-        if (!cancelled) setBalance(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [client, connected]);
-
   const providerLabel = rpcStatus?.provider === "helius" ? "Helius" : "Public devnet";
   const clusterLabel = rpcStatus?.clusterLabel ?? solanaClusterLabel(SOLANA_CHAIN);
 
@@ -108,7 +98,9 @@ function WalletControls({ client }: { client: AppClient }) {
           </p>
           <p className="text-xs text-neutral-500">
             {clusterLabel} · {providerLabel}
+            {balanceRequest.status === "fetching" && walletAddress ? " · …" : ""}
             {balance ? ` · ${balance}` : ""}
+            {balanceRequest.status === "error" ? " · balance unavailable" : ""}
           </p>
           {canSignV1 ? null : (
             <p className="text-xs text-neutral-500">This wallet cannot sign version 1 transactions yet.</p>

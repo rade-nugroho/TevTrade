@@ -7,12 +7,14 @@ import AppSidebar1 from "@/components/app-sidebar-1";
 import Analytics13 from "@/components/blocks/analytics-13";
 import Analytics14 from "@/components/blocks/analytics-14";
 import Analytics2 from "@/components/blocks/analytics-2";
+import { SwapQuote } from "@/components/blocks/swap-quote";
 import { WalletPanel } from "@/components/blocks/wallet-panel";
 import Dashboard1 from "@/components/dashboard-1";
 import DataTable1 from "@/components/data-table-1";
 
 const VIEWS = [
   { id: "decision", label: "Decision" },
+  { id: "quote", label: "Quote" },
   { id: "desk", label: "Desk" },
   { id: "ledger", label: "Ledger" },
   { id: "analytics", label: "Analytics" },
@@ -62,6 +64,7 @@ export function Workspace() {
       </header>
       <main className="min-h-0 flex-1 overflow-auto">
         {view === "decision" ? <AiChat1 /> : null}
+        {view === "quote" ? <SwapQuote /> : null}
         {view === "desk" ? <Dashboard1 /> : null}
         {view === "ledger" ? <DataTable1 /> : null}
         {view === "analytics" ? (

@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 
 /**
  * Streams a local decision.
- * TypeDB supplies the rule book, Helius supplies the wallet balance, and Ollama writes the answer.
+ * TypeDB supplies the rule book, Helius supplies the wallet balance, and the model returns one option letter.
  */
 export async function POST(request: Request) {
   let body: unknown;

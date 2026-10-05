@@ -2,41 +2,52 @@ import "server-only";
 
 import { z } from "zod";
 import { readServerEnv } from "./env";
+import {
+  buildChatCompletionBody,
+  buildDecisionTask,
+  clipDecisionText,
+  readDecisionLetter,
+  type DecisionOption,
+} from "./tev-decision";
 
-const ACTIONS = {
-  add: "Take the requested action, and cap any single position at 2 percent of equity.",
-  stand_aside: "Do not act. A required fact is missing, or the rules say to stand aside.",
-  none: "None of the listed actions fit the question.",
-} as const;
+const ACTIONS = [
+  {
+    key: "add",
+    description: "Take the requested action, and cap any single position at 2 percent of equity.",
+  },
+  {
+    key: "stand_aside",
+    description: "Do not act. A required fact is missing, or the rules say to stand aside.",
+  },
+  {
+    key: "none",
+    description: "None of the listed actions fit the question.",
+  },
+] as const;
 
-const choiceAnswerSchema = z.object({
-  type: z.literal("choice"),
-  choice: z.string(),
-  probabilities: z.record(z.string(), z.number()),
-  confidence: z.number(),
-});
-
-const noulAnswerSchema = z.object({
-  type: z.literal("noul"),
-  noul: z.number(),
-});
-
-const systemOneResponseSchema = z.object({
-  model: z.string().optional(),
-  answers: z.object({
-    action: choiceAnswerSchema,
-    enough_information: noulAnswerSchema,
-  }),
-  error: z.string().optional(),
-});
-
-const errorResponseSchema = z.object({
-  error: z.string().optional(),
-});
+const QUESTION = "Which listed action best fits the request in the state?";
 
 /**
- * Asks `tev1:4b` for one action through Ollama's decision endpoint.
- * The model returns a choice and probabilities. It does not write an explanation.
+ * Turns one mapped letter into the text shown in the decision chat.
+ * The letter is the whole model answer. It is not a probability and not authority to trade.
+ *
+ * @param choice - Option selected from the completion letter.
+ * @returns Desk text for the assistant message.
+ */
+function formatDecision(choice: DecisionOption): string {
+  return [
+    `Decision: ${choice.description}`,
+    `Choice: ${choice.key.replaceAll("_", " ")}`,
+    `Letter: ${choice.label}`,
+    "This letter is the whole answer. Do not use it as the sole authority for a trade.",
+  ].join("\n");
+}
+
+/**
+ * Asks the configured Tev1 checkpoint for one action.
+ * The request follows the model card: a system instruction, then JSON with state, question, and options.
+ *
+ * @param input - Chat history, rule book, chain note, and the token callback.
  */
 export async function streamOllamaDecision(input: {
   readonly messages: readonly { role: "user" | "assistant"; text: string }[];
@@ -54,44 +65,29 @@ export async function streamOllamaDecision(input: {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (ollamaApiKey) headers.authorization = `Bearer ${ollamaApiKey}`;
 
-  const question = input.messages.at(-1)?.text ?? "";
-  const earlierTurns = input.messages
-    .slice(0, -1)
-    .map((message) => `${message.role}: ${message.text}`)
-    .join("\n");
+  const task = buildDecisionTask({
+    state: buildState(input),
+    question: QUESTION,
+    options: ACTIONS,
+  });
+  const body = buildChatCompletionBody({
+    model: ollamaModel,
+    task,
+    includeOllamaThinkingOff: usesOllamaThinkingSwitch(baseUrl),
+  });
 
   let response: Response;
   try {
-    response = await fetch(systemOneUrl(baseUrl), {
+    response = await fetch(chatCompletionsUrl(baseUrl), {
       method: "POST",
       headers,
-      body: JSON.stringify({
-        model: ollamaModel,
-        state: {
-          question: clip(question, 1_500),
-          earlier_turns: clip(earlierTurns, 1_500),
-          rules: clip(input.facts, 2_000),
-          chain: clip(input.chain, 800),
-        },
-        questions: {
-          action: {
-            type: "choice",
-            instructions:
-              "Which listed action best fits the question in the state, given the rules and the chain note?",
-            criteria: ACTIONS,
-          },
-          enough_information: {
-            type: "noul",
-            instructions: "Does the state contain the facts needed to act on the question?",
-          },
-        },
-      }),
+      body: JSON.stringify(body),
       signal: input.signal,
     });
   } catch (error) {
     if (isAbort(error)) throw error;
     throw new Error(
-      `Ollama is not reachable at ${safeHost(baseUrl)}. Start it with \`ollama serve\` or set OLLAMA_URL_ENDPOINT.`,
+      `The decision runtime is not reachable at ${safeHost(baseUrl)}. Start Ollama with \`ollama serve\`, or set OLLAMA_URL_ENDPOINT to a vLLM server.`,
     );
   }
 
@@ -100,19 +96,42 @@ export async function streamOllamaDecision(input: {
     throw new Error(readFailure(payload, response.status, ollamaModel));
   }
 
-  const parsed = systemOneResponseSchema.safeParse(payload);
-  if (!parsed.success) {
-    throw new Error(`${ollamaModel} returned a decision the desk could not read.`);
-  }
-  if (parsed.data.error) {
-    throw new Error(parsed.data.error.slice(0, 200));
-  }
-
-  input.onToken(formatDecision(parsed.data.answers));
+  const choice = readDecisionLetter(payload, task.options);
+  input.onToken(formatDecision(choice));
 }
 
 /**
- * Picks the Ollama host. A key with no URL targets ollama.com.
+ * Joins the rule book, chain note, and chat into the decision state.
+ * The caller's words stay inside state so the model treats them as data.
+ *
+ * @param input - Messages, rules, and chain note already collected by the desk.
+ * @returns State text for the Tev1 user message.
+ */
+function buildState(input: {
+  readonly messages: readonly { role: "user" | "assistant"; text: string }[];
+  readonly facts: string;
+  readonly chain: string;
+}): string {
+  const request = input.messages.at(-1)?.text ?? "";
+  const earlierTurns = input.messages
+    .slice(0, -1)
+    .map((message) => `${message.role}: ${message.text}`)
+    .join("\n");
+  const parts = [
+    `Rules:\n${clipDecisionText(input.facts, 2_000)}`,
+    `Chain:\n${clipDecisionText(input.chain, 800)}`,
+  ];
+  if (earlierTurns.trim()) {
+    parts.push(`Earlier turns:\n${clipDecisionText(earlierTurns, 1_500)}`);
+  }
+  parts.push(`Request:\n${clipDecisionText(request, 1_500)}`);
+  return parts.join("\n\n");
+}
+
+/**
+ * Picks the decision host. A key with no URL targets ollama.com.
+ *
+ * @returns Base URL without a trailing slash.
  */
 function resolveOllamaUrl(): string {
   const { ollamaUrl, ollamaApiKey } = readServerEnv();
@@ -123,73 +142,98 @@ function resolveOllamaUrl(): string {
 }
 
 /**
- * Builds the decision URL. A host that already ends in `/api` is trimmed first.
+ * Builds the chat completions URL.
+ * A host that already ends in `/v1` or `/api` is normalized first.
+ *
+ * @param baseUrl - Configured Ollama or vLLM origin.
+ * @returns OpenAI-compatible chat completions URL.
  */
-function systemOneUrl(baseUrl: string): string {
-  return `${baseUrl.replace(/\/api$/, "").replace(/\/$/, "")}/v1/systemone`;
+function chatCompletionsUrl(baseUrl: string): string {
+  const trimmed = baseUrl.replace(/\/+$/, "").replace(/\/api$/, "");
+  if (trimmed.endsWith("/v1/chat/completions")) return trimmed;
+  if (trimmed.endsWith("/v1")) return `${trimmed}/chat/completions`;
+  return `${trimmed}/v1/chat/completions`;
 }
 
 /**
- * Turns the structured decision into the text shown in the chat.
- * Concentration describes how peaked the probabilities are. It is not accuracy.
+ * Reports whether this host needs Ollama's thinking switch.
+ * Ollama 0.35 ignores `chat_template_kwargs` on chat completions.
+ * `reasoning_effort: "none"` is what turns thinking off there.
+ * vLLM keeps the model-card fields only.
+ *
+ * @param baseUrl - Configured decision host.
+ * @returns True for local Ollama and ollama.com.
  */
-function formatDecision(answers: z.infer<typeof systemOneResponseSchema>["answers"]): string {
-  const { action, enough_information: enough } = answers;
-  const label = ACTIONS[action.choice as keyof typeof ACTIONS] ?? action.choice;
-  const probabilities = Object.entries(action.probabilities)
-    .map(([name, probability]) => `${name.replaceAll("_", " ")} ${percent(probability)}`)
-    .join(", ");
-  const informed = enough.noul >= 0.5 ? "yes" : "no";
-
-  return [
-    `Decision: ${label}`,
-    `Choice: ${action.choice.replaceAll("_", " ")}`,
-    `Probabilities: ${probabilities}`,
-    `Concentration: ${percent(action.confidence)}. This is not the chance the choice is correct.`,
-    `Enough information to act: ${informed} (${percent(enough.noul)}).`,
-  ].join("\n");
+function usesOllamaThinkingSwitch(baseUrl: string): boolean {
+  try {
+    const url = new URL(baseUrl);
+    return (
+      url.port === "11434" || url.hostname === "ollama.com" || url.hostname.endsWith(".ollama.com")
+    );
+  } catch {
+    return true;
+  }
 }
 
-/**
- * Formats a 0–1 probability as a whole percent.
- */
-function percent(value: number): string {
-  return `${Math.round(value * 100)}%`;
-}
+const errorStringSchema = z.object({
+  error: z.string(),
+});
+
+const errorObjectSchema = z.object({
+  error: z.object({
+    message: z.string(),
+  }),
+});
 
 /**
- * Keeps decision state inside Tev1's short context window.
- */
-function clip(value: string, maxLength: number): string {
-  const trimmed = value.trim();
-  return trimmed.length <= maxLength ? trimmed : `${trimmed.slice(0, maxLength)}…`;
-}
-
-/**
- * Turns an Ollama HTTP error into a short operator message.
+ * Turns an HTTP error into a short operator message.
+ *
+ * @param payload - Response JSON, when the body parsed.
+ * @param status - HTTP status code.
+ * @param model - Configured model name.
+ * @returns A message safe to show in the desk.
  */
 function readFailure(payload: unknown, status: number, model: string): string {
-  const parsed = errorResponseSchema.safeParse(payload);
-  const detail = parsed.success ? parsed.data.error?.slice(0, 200) : undefined;
-  if (status === 404 || /not found/i.test(detail ?? "")) {
-    return `Ollama has no model "${model}", or this Ollama build has no /v1/systemone endpoint. Tev1 needs Ollama 0.35 or later.`;
+  const detail = readErrorDetail(payload).slice(0, 200);
+  if (status === 404 || /not found/i.test(detail)) {
+    return `No model "${model}" is loaded. For Ollama run \`ollama pull tev1:0.8b\`. For vLLM serve togethercomputer/Tev1-0.8B-experimental and set OLLAMA_MODEL to that id.`;
   }
-  return detail || `Ollama returned HTTP ${status}.`;
+  return detail || `The decision runtime returned HTTP ${status}.`;
+}
+
+/**
+ * Reads an error string from either an Ollama or an OpenAI error body.
+ *
+ * @param payload - Response JSON, when the body parsed.
+ * @returns The error text, or an empty string when the body has none.
+ */
+function readErrorDetail(payload: unknown): string {
+  const asString = errorStringSchema.safeParse(payload);
+  if (asString.success) return asString.data.error;
+  const asObject = errorObjectSchema.safeParse(payload);
+  if (asObject.success) return asObject.data.error.message;
+  return "";
 }
 
 /**
  * Returns the host without a path, query, or embedded secret.
+ *
+ * @param url - Configured decision URL.
+ * @returns Host, or a generic label when the URL cannot be parsed.
  */
 function safeHost(url: string): string {
   try {
     return new URL(url).host;
   } catch {
-    return "the configured Ollama host";
+    return "the configured decision host";
   }
 }
 
 /**
  * Detects an aborted fetch.
+ *
+ * @param error - Rejection from `fetch`.
+ * @returns True when the caller aborted the request.
  */
 function isAbort(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";

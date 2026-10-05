@@ -9,8 +9,9 @@ function readOptional(name: string): string | undefined {
 }
 
 /**
- * Server configuration for Ollama, Helius, and TypeDB.
- * Secrets stay on the server. The browser reaches Helius through `/api/rpc`.
+ * Server configuration for Ollama, Helius, TypeDB, and Titan.
+ * Secrets stay on the server. The browser reaches Helius through `/api/rpc`
+ * and Titan through `/api/titan/quote`.
  */
 export type ServerEnv = {
   readonly ollamaApiKey: string | undefined;
@@ -21,11 +22,14 @@ export type ServerEnv = {
   readonly typedbUrl: string | undefined;
   readonly typedbToken: string | undefined;
   readonly typedbDatabase: string;
+  readonly titanApiKey: string | undefined;
+  readonly titanApiUrl: string;
 };
 
 /**
  * Loads server environment variables.
  * `OLLAMA_URL_ENPOINT` is accepted because `.env.example` ships that spelling.
+ * The decision model defaults to the Ollama tag `tev1:0.8b`.
  */
 export function readServerEnv(): ServerEnv {
   const database = readOptional("TYPEDB_DATABASE") ?? "tevtrade";
@@ -36,11 +40,13 @@ export function readServerEnv(): ServerEnv {
   return {
     ollamaApiKey: readOptional("OLLAMA_API_KEY"),
     ollamaUrl: readOptional("OLLAMA_URL_ENDPOINT") ?? readOptional("OLLAMA_URL_ENPOINT"),
-    ollamaModel: readOptional("OLLAMA_MODEL") ?? "tev1:4b",
+    ollamaModel: readOptional("OLLAMA_MODEL") ?? "tev1:0.8b",
     heliusApiKey: readOptional("HELIUS_API_KEY"),
     heliusUrl: readOptional("HELIUS_URL"),
     typedbUrl: readOptional("TYPEDB_URL"),
     typedbToken: readOptional("TYPEDB_TOKEN"),
     typedbDatabase: database,
+    titanApiKey: readOptional("TITAN_API_KEY"),
+    titanApiUrl: readOptional("TITAN_API_URL") ?? "https://portal.api.titan.exchange",
   };
 }
