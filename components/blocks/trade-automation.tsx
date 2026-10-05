@@ -12,7 +12,13 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import type { AppClient } from "@/lib/client";
 import { executeDartSwap } from "@/lib/dart-execution";
 import { decisionEventSchema } from "@/lib/decision-schema";
-import { SOLANA_CHAIN, solanaClusterLabel } from "@/lib/solana-cluster";
+import {
+  canSendDartSwap,
+  clusterAllowsDartSend,
+  dartSendBlockedMessage,
+  SOLANA_CHAIN,
+  solanaClusterLabel,
+} from "@/lib/solana-cluster";
 import {
   buildOrderIdempotencyKey,
   confirmResultOrder,
@@ -25,11 +31,14 @@ import {
 } from "@/lib/titan-dca-public";
 import { TITAN_SOL_MINT, TITAN_USDC_MINT, type TitanQuoteView } from "@/lib/titan-public";
 import {
+  automationSupportsOrderType,
+  buildAutomationOrderConfig,
   parseAutomationStance,
   stanceAllowsQuote,
   stanceLabel,
   trackLabel,
   type AutomationPhase,
+  type AutomationPriceBasis,
   type AutomationStance,
   type AutomationTrack,
 } from "@/lib/trade-automation-public";
@@ -56,11 +65,19 @@ type AutomationForm = {
   inputMint: string;
   outputMint: string;
   inputDecimals: number;
+  outputDecimals: number;
   uiAmount: string;
   amountPerCycleUi: string;
   cycleFrequencySeconds: string;
   totalCycles: string;
   slippageBps: string;
+  triggerPriceUi: string;
+  priceDecimals: string;
+  priceBasis: AutomationPriceBasis;
+  minOutputUi: string;
+  trailingStopBps: string;
+  /** When true, operator explicitly targets mainnet for DART send on a non-mainnet desk. */
+  targetQuoteChain: boolean;
   prompt: string;
   manualAddress: string;
 };
@@ -71,11 +88,18 @@ const INITIAL_FORM: AutomationForm = {
   inputMint: TITAN_SOL_MINT,
   outputMint: TITAN_USDC_MINT,
   inputDecimals: 9,
+  outputDecimals: 6,
   uiAmount: "0.1",
   amountPerCycleUi: "0.01",
   cycleFrequencySeconds: "86400",
   totalCycles: "10",
   slippageBps: "50",
+  triggerPriceUi: "100",
+  priceDecimals: "6",
+  priceBasis: "pair",
+  minOutputUi: "",
+  trailingStopBps: "",
+  targetQuoteChain: false,
   prompt:
     "Consider the stated size. Prefer standing aside when size, liquidity, or signing rules are unclear.",
   manualAddress: "",
@@ -91,18 +115,6 @@ type DecisionResult = {
 };
 
 /**
- * Converts a decimal UI amount into an atom integer string.
- */
-function toAtomAmount(uiAmount: string, decimals: number): string | null {
-  const match = /^(\d+)(?:\.(\d+))?$/.exec(uiAmount.trim());
-  if (!match || (match[2]?.length ?? 0) > decimals) return null;
-  const whole = match[1].replace(/^0+(?=\d)/, "");
-  const fraction = (match[2] ?? "").padEnd(decimals, "0");
-  const units = `${whole}${fraction}`.replace(/^0+(?=\d)/, "");
-  return units === "0" ? null : units;
-}
-
-/**
  * Builds a trade-sized decision prompt from the form.
  */
 function buildDecisionPrompt(form: AutomationForm): string {
@@ -112,36 +124,18 @@ function buildDecisionPrompt(form: AutomationForm): string {
     form.track === "spot"
       ? `Proposed spot swap: sell ${form.uiAmount.trim()} ${sell} for ${buy}.`
       : `Proposed ${form.orderType} automation: deposit ${form.uiAmount.trim()} ${sell} toward ${buy}.`;
+  const detailLine =
+    form.track === "spot"
+      ? `Slippage budget: ${form.slippageBps.trim() || "50"} bps.`
+      : form.orderType === "dca"
+        ? `Cycles: ${form.totalCycles} × ${form.amountPerCycleUi} every ${form.cycleFrequencySeconds}s.`
+        : `Trigger ${form.triggerPriceUi} (${form.priceBasis}, ${form.priceDecimals} decimals).`;
   return [
     form.prompt.trim(),
     trackLine,
-    form.track === "spot"
-      ? `Slippage budget: ${form.slippageBps.trim() || "50"} bps.`
-      : `Cycles: ${form.totalCycles} × ${form.amountPerCycleUi} every ${form.cycleFrequencySeconds}s.`,
+    detailLine,
     "This is a recommendation request only. Do not treat the letter as authority to sign.",
   ].join("\n");
-}
-
-/**
- * Draft DCA config from desk fields. Atom amounts are integer strings.
- * Other order types still require Titan Order Types config docs.
- */
-function buildDcaConfig(form: AutomationForm): Record<string, unknown> | null {
-  const totalAmount = toAtomAmount(form.uiAmount, form.inputDecimals);
-  const amountPerCycle = toAtomAmount(form.amountPerCycleUi, form.inputDecimals);
-  const cycleFrequencySeconds = Number(form.cycleFrequencySeconds);
-  const totalCycles = Number(form.totalCycles);
-  if (!totalAmount || !amountPerCycle) return null;
-  if (!Number.isInteger(cycleFrequencySeconds) || cycleFrequencySeconds <= 0) return null;
-  if (!Number.isInteger(totalCycles) || totalCycles <= 0) return null;
-  return {
-    inputMint: form.inputMint.trim(),
-    outputMint: form.outputMint.trim(),
-    totalAmount,
-    amountPerCycle,
-    cycleFrequencySeconds,
-    totalCycles,
-  };
 }
 
 /**
@@ -265,17 +259,21 @@ export function TradeAutomation() {
   }
 
   /**
-   * Requests a Special Orders intent (DCA happy path first).
+   * Requests a Special Orders intent (dca / stop_loss / take_profit happy path).
    */
   async function requestIntent(address: string, signal: AbortSignal): Promise<TitanOrderIntentResult> {
-    if (form.orderType !== "dca") {
+    if (!automationSupportsOrderType(form.orderType)) {
       throw new Error(
-        `Automation happy-path currently stubs ${form.orderType} config. Use Orders for raw JSON, or pick dca.`,
+        `Automation happy-path does not build ${form.orderType} config yet. Use Orders for raw JSON, or pick dca / stop_loss / take_profit.`,
       );
     }
-    const config = buildDcaConfig(form);
+    const config = buildAutomationOrderConfig(form.orderType, form);
     if (!config) {
-      throw new Error("Check deposit amount, amount per cycle, frequency, and cycle count.");
+      throw new Error(
+        form.orderType === "dca"
+          ? "Check deposit amount, amount per cycle, frequency (≥60s), and cycle count."
+          : "Check deposit amount, trigger price, price decimals (0–18), and optional min-output / trailing bps.",
+      );
     }
     if (!sub) throw new Error("Connect a wallet to create a Special Order intent.");
 
@@ -385,6 +383,8 @@ export function TradeAutomation() {
    * Spot track: Wallet Standard signs + sends the quoted DART route.
    * Order track: Wallet Standard signs deposit, then confirm.
    * Declining the wallet prompt returns the run to awaiting_approval.
+   * Never loads `id.json`. DART send is refused off-mainnet unless the operator
+   * explicitly targets the quote chain.
    */
   async function approveExecution() {
     if (phase !== "awaiting_approval") return;
@@ -398,6 +398,16 @@ export function TradeAutomation() {
         setApprovalNote(
           "Approved. This route carries no executable instructions (Portal quotes are display-only), so nothing was signed or sent.",
         );
+        return;
+      }
+      if (
+        !canSendDartSwap({
+          chain: SOLANA_CHAIN,
+          targetQuoteChain: form.targetQuoteChain,
+        })
+      ) {
+        setPhase("awaiting_approval");
+        setApprovalNote(dartSendBlockedMessage(SOLANA_CHAIN));
         return;
       }
       if (!signer || !connected) {
@@ -424,7 +434,9 @@ export function TradeAutomation() {
 
       setPhase("executing");
       setApprovalNote(
-        "Approved. Building the V0 transaction — your wallet will ask to sign and send.",
+        clusterAllowsDartSend(SOLANA_CHAIN)
+          ? "Approved. Building the V0 transaction — your wallet will ask to sign and send on mainnet."
+          : "Approved with explicit mainnet quote-chain targeting. Building the V0 transaction — your wallet will ask to sign and send.",
       );
       try {
         const signature = await executeDartSwap(client, signer, quote.execution);
@@ -596,7 +608,13 @@ export function TradeAutomation() {
             value={PRESETS.some((item) => item.mint === form.outputMint) ? form.outputMint : "custom"}
             onChange={(event) => {
               if (event.target.value === "custom") return;
-              setForm((current) => ({ ...current, outputMint: event.target.value }));
+              const preset = PRESETS.find((item) => item.mint === event.target.value);
+              if (!preset) return;
+              setForm((current) => ({
+                ...current,
+                outputMint: preset.mint,
+                outputDecimals: preset.decimals,
+              }));
             }}
             className="h-9 rounded-[var(--rb-r-md,8px)] border border-neutral-200 bg-white px-2 text-sm text-neutral-900 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100"
           >
@@ -628,7 +646,7 @@ export function TradeAutomation() {
               className="h-9 rounded-[var(--rb-r-md,8px)] border border-neutral-200 bg-white px-2 text-sm text-neutral-900 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100"
             />
           </label>
-        ) : (
+        ) : form.orderType === "dca" ? (
           <label className="flex flex-col gap-1 text-xs text-neutral-500">
             Amount per cycle
             <input
@@ -637,8 +655,20 @@ export function TradeAutomation() {
                 setForm((current) => ({ ...current, amountPerCycleUi: event.target.value }))
               }
               inputMode="decimal"
-              disabled={form.orderType !== "dca"}
-              className="h-9 rounded-[var(--rb-r-md,8px)] border border-neutral-200 bg-white px-2 text-sm text-neutral-900 disabled:opacity-50 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100"
+              className="h-9 rounded-[var(--rb-r-md,8px)] border border-neutral-200 bg-white px-2 text-sm text-neutral-900 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100"
+            />
+          </label>
+        ) : (
+          <label className="flex flex-col gap-1 text-xs text-neutral-500">
+            Trigger price
+            <input
+              value={form.triggerPriceUi}
+              onChange={(event) =>
+                setForm((current) => ({ ...current, triggerPriceUi: event.target.value }))
+              }
+              inputMode="decimal"
+              placeholder="e.g. 100 or 0.45"
+              className="h-9 rounded-[var(--rb-r-md,8px)] border border-neutral-200 bg-white px-2 text-sm text-neutral-900 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100"
             />
           </label>
         )}
@@ -664,6 +694,63 @@ export function TradeAutomation() {
                   setForm((current) => ({ ...current, totalCycles: event.target.value }))
                 }
                 inputMode="numeric"
+                className="h-9 rounded-[var(--rb-r-md,8px)] border border-neutral-200 bg-white px-2 text-sm text-neutral-900 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100"
+              />
+            </label>
+          </>
+        ) : null}
+
+        {form.track === "order" &&
+        (form.orderType === "stop_loss" || form.orderType === "take_profit") ? (
+          <>
+            <label className="flex flex-col gap-1 text-xs text-neutral-500">
+              Price decimals
+              <input
+                value={form.priceDecimals}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, priceDecimals: event.target.value }))
+                }
+                inputMode="numeric"
+                className="h-9 rounded-[var(--rb-r-md,8px)] border border-neutral-200 bg-white px-2 text-sm text-neutral-900 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-neutral-500">
+              Price basis
+              <select
+                value={form.priceBasis}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    priceBasis: event.target.value as AutomationPriceBasis,
+                  }))
+                }
+                className="h-9 rounded-[var(--rb-r-md,8px)] border border-neutral-200 bg-white px-2 text-sm text-neutral-900 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100"
+              >
+                <option value="pair">pair (out per in)</option>
+                <option value="usd">usd (USD per input)</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-neutral-500">
+              Min output (optional)
+              <input
+                value={form.minOutputUi}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, minOutputUi: event.target.value }))
+                }
+                inputMode="decimal"
+                placeholder="Output mint amount floor"
+                className="h-9 rounded-[var(--rb-r-md,8px)] border border-neutral-200 bg-white px-2 text-sm text-neutral-900 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-neutral-500">
+              Trailing stop bps (optional)
+              <input
+                value={form.trailingStopBps}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, trailingStopBps: event.target.value }))
+                }
+                inputMode="numeric"
+                placeholder="1–9999"
                 className="h-9 rounded-[var(--rb-r-md,8px)] border border-neutral-200 bg-white px-2 text-sm text-neutral-900 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100"
               />
             </label>
@@ -749,17 +836,46 @@ export function TradeAutomation() {
         <div className="flex flex-col gap-3">
           <div className="rounded-[var(--rb-r-md,8px)] border border-neutral-200 px-3 py-3 dark:border-neutral-800">
             <p className="text-xs text-neutral-500">
-              Recommended route ({quote.source === "dart" ? "DART" : "Portal"})
-            </p>
-            <p className="mt-1 text-sm font-medium text-neutral-900 dark:text-neutral-100">
-              {quote.recommendedProvider || recommended?.provider || "Unnamed"}
+              {quote.source === "dart" ? "DART" : "Portal"}
+              {quote.recommendedProvider ? (
+                <>
+                  {" "}
+                  · expectedWinner / recommended{" "}
+                  <span className="font-medium text-neutral-900 dark:text-neutral-100">
+                    {quote.recommendedProvider}
+                  </span>
+                </>
+              ) : (
+                " · Titan did not name a recommended provider."
+              )}
+              {quote.execution
+                ? ` · ${quote.execution.instructions.length} ix · ${quote.execution.addressLookupTables.length} ALT`
+                : " · no executable instructions on this quote"}
             </p>
             {recommended ? (
               <p className="mt-1 text-xs text-neutral-500">
-                {recommended.inDisplay} in · {recommended.outDisplay} out
+                Top route: {recommended.inDisplay} in · {recommended.outDisplay} out
+                {recommended.slippageBps !== null ? ` · ${recommended.slippageBps} bps` : ""}
               </p>
             ) : null}
           </div>
+          <ul className="flex flex-col gap-2">
+            {quote.routes.map((route) => (
+              <li
+                key={route.provider}
+                className="rounded-[var(--rb-r-md,8px)] border border-neutral-200 px-3 py-2 dark:border-neutral-800"
+              >
+                <p className="text-sm text-neutral-900 dark:text-neutral-100">
+                  {route.recommended ? "Recommended · " : ""}
+                  {route.provider}
+                </p>
+                <p className="mt-1 text-xs text-neutral-500">
+                  {route.inDisplay} in · {route.outDisplay} out
+                  {route.slippageBps !== null ? ` · ${route.slippageBps} bps` : ""}
+                </p>
+              </li>
+            ))}
+          </ul>
         </div>
       ) : null}
 
@@ -788,13 +904,24 @@ export function TradeAutomation() {
           <p className="text-xs leading-5 text-neutral-700 dark:text-neutral-300">
             {form.track === "order"
               ? "Human approval required before Wallet Standard signs the deposit. Review recipient, amount, fee, and expiry above."
-              : "Human approval required. Approving builds a V0 transaction from this route and asks your wallet to sign and send."}
+              : "Human approval required. Approving builds a V0 transaction from this route and asks your wallet to sign and send. Never id.json."}
           </p>
-          {form.track === "spot" && SOLANA_CHAIN !== "solana:mainnet" ? (
-            <p className="text-xs leading-5 text-amber-700 dark:text-amber-300">
-              Configured cluster is {solanaClusterLabel()}, but DART routes are mainnet. Sending will
-              fail unless the RPC targets mainnet.
-            </p>
+          {form.track === "spot" && !clusterAllowsDartSend(SOLANA_CHAIN) ? (
+            <label className="flex items-start gap-2 text-xs leading-5 text-amber-800 dark:text-amber-200">
+              <input
+                type="checkbox"
+                checked={form.targetQuoteChain}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, targetQuoteChain: event.target.checked }))
+                }
+                className="mt-0.5"
+              />
+              <span>
+                Desk cluster is {solanaClusterLabel(SOLANA_CHAIN)}. DART routes are mainnet. Check
+                this box to explicitly target the quote chain (mainnet) for send — otherwise Approve
+                refuses execution (no fake localnet fill).
+              </span>
+            </label>
           ) : null}
           {form.track === "spot" && quote?.execution && !connected?.signer ? (
             <p className="text-xs leading-5 text-amber-700 dark:text-amber-300">
@@ -810,7 +937,12 @@ export function TradeAutomation() {
             >
               {form.track === "order"
                 ? "Approve & sign deposit"
-                : quote?.execution && connected?.signer
+                : quote?.execution &&
+                    connected?.signer &&
+                    canSendDartSwap({
+                      chain: SOLANA_CHAIN,
+                      targetQuoteChain: form.targetQuoteChain,
+                    })
                   ? "Approve & execute"
                   : "Approve (gate only)"}
             </button>

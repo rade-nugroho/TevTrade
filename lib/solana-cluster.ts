@@ -32,6 +32,54 @@ export function solanaClusterLabel(chain: string = SOLANA_CHAIN): string {
 }
 
 /**
+ * Chain id DART/Portal swap quotes target. Titan swap routes are mainnet-only.
+ */
+export const DART_QUOTE_CHAIN = "solana:mainnet" as const;
+
+/**
+ * Returns whether the configured desk cluster can send a DART swap without an
+ * explicit mainnet override. Localnet/devnet/testnet never silently send.
+ *
+ * @param chain - Active Wallet Standard chain id.
+ * @returns True only when the desk already targets mainnet.
+ */
+export function clusterAllowsDartSend(chain: string = SOLANA_CHAIN): boolean {
+  return chain === DART_QUOTE_CHAIN;
+}
+
+/**
+ * Returns whether the operator may sign/send an approved DART route.
+ * Allowed when the desk cluster is mainnet, or when the operator explicitly
+ * targets the quote chain (mainnet) despite a non-mainnet desk cluster.
+ *
+ * @param options - Cluster and optional explicit mainnet targeting.
+ * @returns True when send is permitted.
+ */
+export function canSendDartSwap(options: {
+  readonly chain?: string;
+  readonly targetQuoteChain?: boolean;
+}): boolean {
+  const chain = options.chain ?? SOLANA_CHAIN;
+  if (clusterAllowsDartSend(chain)) return true;
+  return options.targetQuoteChain === true;
+}
+
+/**
+ * Operator-facing refusal when a DART send is blocked by cluster mismatch.
+ *
+ * @param chain - Active desk cluster.
+ * @returns Short message explaining the gate.
+ */
+export function dartSendBlockedMessage(chain: string = SOLANA_CHAIN): string {
+  return (
+    `DART routes are ${solanaClusterLabel(DART_QUOTE_CHAIN)} transactions. ` +
+    `Configured cluster is ${solanaClusterLabel(chain)}. ` +
+    "Refuse send, or explicitly target the quote chain (mainnet) before Approve & execute. " +
+    "No fake localnet fill."
+  );
+}
+
+/**
  * Formats a lamport amount as SOL with four decimal places.
  */
 export function formatSol(lamports: bigint): string {

@@ -2,7 +2,7 @@
 
 TevTrade is a local decision desk. A question goes to Ollama. The answer is grounded in trading rules stored in TypeDB and a SOL balance read through Helius (connected Wallet Standard wallet, or optional public `DESK_WALLET_ADDRESS`).
 
-The browser never receives `HELIUS_API_KEY`, `OLLAMA_API_KEY`, `TYPEDB_TOKEN`, `TITAN_API_KEY`, `TITAN_DART_API_KEY`, `TITAN_DCA_API_KEY`, or `TITAN_JWT`. Wallet signing stays in a Wallet Standard extension. Do not import a filesystem keypair (`id.json`) into the desk. The Quote view asks Titan for a mainnet DART route by default (public `/dart`, 1 req/s) and can use Portal or stream Direct quotes. It does not sign or send the swap. Orders uses one SIWS signature to link the wallet, then intent → sign deposit → confirm.
+The browser never receives `HELIUS_API_KEY`, `OLLAMA_API_KEY`, `TYPEDB_TOKEN`, `TITAN_API_KEY`, `TITAN_DART_API_KEY`, `TITAN_DCA_API_KEY`, or `TITAN_JWT`. Wallet signing stays in a Wallet Standard extension. Do not import a filesystem keypair (`id.json`) into the desk. The Quote view asks Titan for a mainnet DART route by default (public `/dart`, 1 req/s) and can use Portal or stream Direct quotes. It does not sign or send the swap. **Trade Automation** runs decision → quote/intent → explicit Approve → Wallet Standard sign/send (spot) or deposit confirm (orders). Spot DART execution is refused on non-mainnet clusters unless you explicitly target the quote chain; there is no fake localnet fill. Orders uses one SIWS signature to link the wallet, then intent → sign deposit → confirm.
 
 ## Run
 
@@ -21,7 +21,19 @@ The browser never receives `HELIUS_API_KEY`, `OLLAMA_API_KEY`, `TYPEDB_TOKEN`, `
 
 3. Open [http://localhost:3000](http://localhost:3000).
 
-The Decision view is the chat. Quote asks Titan DART by default (or Portal when configured) and can open a Direct quote stream. Orders runs SIWS onboard plus partner intent/confirm. Desk shows wallet SOL, partner positions/fills (`amountSpent` / `amountReceived`, DCA cycles, `currentTriggerPrice`, `availableToWithdraw`) when `TITAN_DCA_*` is set. Analytics shows session counts, personal spent→received fills, and the TypeDB rule book — honest empty states when data is missing.
+The Decision view is the chat. **Automation** runs Tev1 + TypeDB stance, then either a DART spot quote (with routes / expectedWinner) or a Special Order intent (`dca`, `stop_loss`, `take_profit`), and always waits for human Approve before any Wallet Standard sign. Quote asks Titan DART by default (or Portal when configured) and can open a Direct quote stream. Orders runs SIWS onboard plus partner intent/confirm. Desk shows wallet SOL, partner positions/fills (`amountSpent` / `amountReceived`, DCA cycles, `currentTriggerPrice`, `availableToWithdraw`) when `TITAN_DCA_*` is set. Analytics shows session counts, personal spent→received fills, and the TypeDB rule book — honest empty states when data is missing.
+
+### Automation path (enabled when you approve)
+
+| Step | What happens | Needs |
+| --- | --- | --- |
+| Decision | Tev1 letter → stance (`add` advances) | Ollama + TypeDB |
+| Spot quote | `POST /api/titan/quote` with `includeInstructions` | Public DART (or Portal key) |
+| Spot approve → execute | V0 tx from DART instructions + ALTs; Wallet Standard sign/send | `NEXT_PUBLIC_SOLANA_CLUSTER=solana:mainnet` **or** explicit “target quote chain”; mainnet-funded wallet |
+| Order intent | `dca` / `stop_loss` / `take_profit` config → partner intent | `TITAN_DCA_BASE_URL` + `TITAN_DCA_API_KEY` |
+| Order approve → confirm | Wallet Standard signs deposit; server confirms | Same partner keys + connected wallet |
+
+Still blocked without partner credentials: live Special Order intent/confirm (`TITAN_DCA_*` empty in `.env`). Full mainnet spot send also needs a mainnet Wallet Standard wallet and cluster (or explicit quote-chain targeting with an RPC that can submit mainnet txs).
 
 ## Services
 
