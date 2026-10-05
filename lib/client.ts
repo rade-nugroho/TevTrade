@@ -1,9 +1,35 @@
 import { createClient } from "@solana/kit";
 import { solanaRpc } from "@solana/kit-plugin-rpc";
 import { walletSigner } from "@solana/kit-plugin-wallet";
+import { SOLANA_CHAIN } from "./solana-cluster";
 
+/**
+ * RPC URL for the browser client.
+ * `NEXT_PUBLIC_SOLANA_RPC_URL` wins. Otherwise the browser uses `/api/rpc`,
+ * which forwards to Helius without exposing `HELIUS_API_KEY`.
+ */
+function browserRpcUrl(): string {
+  const configured = process.env.NEXT_PUBLIC_SOLANA_RPC_URL?.trim();
+  if (configured) return configured;
+  if (typeof window !== "undefined") return `${window.location.origin}/api/rpc`;
+  return "https://api.devnet.solana.com";
+}
+
+/**
+ * Wallet-backed Solana client for the whole app.
+ * The connected wallet fills the payer and identity roles.
+ * Transactions are planned as version 1.
+ */
 export const client = createClient()
-  .use(walletSigner({ chain: "solana:devnet" }))
-  .use(solanaRpc({ rpcUrl: "https://api.devnet.solana.com" }));
+  .use(walletSigner({ chain: SOLANA_CHAIN }))
+  .use(
+    solanaRpc({
+      rpcUrl: browserRpcUrl(),
+      transactionConfig: { version: 1 },
+    }),
+  );
 
+/**
+ * Fully typed client used by `useClient<AppClient>()`.
+ */
 export type AppClient = Awaited<typeof client>;

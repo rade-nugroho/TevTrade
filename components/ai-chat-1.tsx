@@ -8,16 +8,18 @@ import {
   type RefObject,
 } from "react";
 import { motion, useReducedMotion } from "motion/react";
+import { useConnectedWallet } from "@solana/kit-plugin-wallet/react";
+import { useClient } from "@solana/react";
 import {
   ArrowDown,
   ArrowUp,
   ChevronRight,
   Copy,
-  Plus,
   RefreshCw,
   Square,
-  X,
 } from "lucide-react";
+import { decisionEventSchema } from "@/lib/decision-schema";
+import type { AppClient } from "@/lib/client";
 
 const cx = (...c: (string | false | null | undefined)[]) =>
   c.filter(Boolean).join(" ");
@@ -53,7 +55,7 @@ function lastWordBoundary(source: string, cut: number) {
 
 function useSmoothedText() {
   const [text, setText] = useState("");
-  const [done, setDone] = useState(false);
+  const [done, setDone] = useState(true);
   const targetRef = useRef("");
   const shownRef = useRef(0);
   const endedRef = useRef(false);
@@ -85,6 +87,8 @@ function useSmoothedText() {
         const safe = finished ? target.length : lastWordBoundary(target, cut);
         setText(target.slice(0, safe));
         if (finished) setDone(true);
+      } else if (endedRef.current && shownRef.current >= target.length) {
+        setDone(true);
       }
       raf = requestAnimationFrame(tick);
     };
@@ -98,6 +102,7 @@ function useSmoothedText() {
   }, []);
   const end = useCallback(() => {
     endedRef.current = true;
+    if (shownRef.current >= targetRef.current.length) setDone(true);
   }, []);
   const reset = useCallback(() => {
     targetRef.current = "";
@@ -214,53 +219,20 @@ function useStickToBottom(scrollRef: RefObject<HTMLDivElement | null>) {
   return { showJump, jumpToLatest };
 }
 
-const REASONING =
-  "The refund total moved with two things last week: a pricing change that " +
-  "shipped on the 12th, and a batch of failed renewals that were auto-refunded. " +
-  "I checked both before answering.";
-
-const TOOL_RESULT = [
-  "reason              count     amount",
-  "Renewal failed         84    $6,240",
-  "Downgrade credit       31    $1,905",
-  "Duplicate charge        9      $612",
-  "Customer request        7      $438",
-].join("\n");
-
-const ANSWER_ONE =
-  "Refunds rose 38% week over week, from $6,730 to $9,290. Almost all of the " +
-  "increase came from failed renewals after the card-retry window was shortened " +
-  "on the 12th. Downgrade credits were flat, and duplicate charges stayed in the " +
-  "single digits.";
-
-const STREAM_TARGET =
-  "By plan, Growth accounted for $5,180 of the refunds and Scale for $3,240, " +
-  "with Starter under $900. The renewal failures cluster on Growth annual plans " +
-  "billed on the 12th, so retrying those cards a day later would recover most of " +
-  "the amount.";
-
-const LIVE_ID = "a2";
+const GREETING =
+  "Ask for a decision. TevTrade reads the TypeDB rule book, checks the connected wallet through Helius, and answers with the local Ollama model. This desk does not sign transactions or ask for a seed phrase.";
 
 const INITIAL_MESSAGES: Message[] = [
-  { id: "u1", role: "user", text: "Why did refunds spike last week?" },
   {
-    id: "a1",
+    id: "a0",
     role: "assistant",
-    reasoning: REASONING,
-    tool: {
-      name: "Searched 1,284 refunds",
-      result: TOOL_RESULT,
-      duration: "1.2s",
-      done: true,
-    },
-    text: ANSWER_ONE,
+    text: GREETING,
     sources: [
-      { id: "1", title: "Billing events" },
-      { id: "2", title: "Pricing change · Jun 12" },
+      { id: "typedb", title: "TypeDB" },
+      { id: "ollama", title: "Ollama" },
+      { id: "helius", title: "Helius" },
     ],
   },
-  { id: "u2", role: "user", text: "Break it down by plan tier." },
-  { id: LIVE_ID, role: "assistant", text: STREAM_TARGET },
 ];
 
 function ReasoningRow({ text }: { text: string }) {
@@ -279,7 +251,7 @@ function ReasoningRow({ text }: { text: string }) {
             open && "rotate-90",
           )}
         />
-        Thought for <span className="tabular-nums">4s</span>
+        Notes
       </button>
       {open && (
         <p className="mt-2 max-w-prose text-[13px] leading-relaxed text-neutral-500">
@@ -341,43 +313,75 @@ function SourceChips({ sources }: { sources: Source[] }) {
   );
 }
 
+/**
+ * Applies one NDJSON decision event to the live assistant message.
+ */
+function consumeDecisionLine(
+  line: string,
+  id: string,
+  started: number,
+  push: (text: string) => void,
+  append: (text: string) => void,
+  setMessages: (update: (current: Message[]) => Message[]) => void,
+) {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  let payload: unknown;
+  try {
+    payload = JSON.parse(trimmed);
+  } catch {
+    return;
+  }
+  const parsed = decisionEventSchema.safeParse(payload);
+  if (!parsed.success) return;
+  const event = parsed.data;
+  if (event.type === "token") {
+    append(event.text);
+    push(event.text);
+    return;
+  }
+  if (event.type === "context") {
+    const elapsed = ((performance.now() - started) / 1000).toFixed(1);
+    setMessages((current) =>
+      current.map((message) =>
+        message.id === id && message.role === "assistant"
+          ? {
+              ...message,
+              tool: {
+                name: "Read decision rules",
+                result: event.summary,
+                duration: `${elapsed}s`,
+                done: true,
+              },
+            }
+          : message,
+      ),
+    );
+    return;
+  }
+  if (event.type === "error") throw new Error(event.message);
+}
+
 export default function AiChat1() {
-  const reduced = useReducedMotion();
+  const client = useClient<AppClient>();
+  const connected = useConnectedWallet(client);
   const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES);
   const [stopped, setStopped] = useState(false);
   const [value, setValue] = useState("");
-  const [runId, setRunId] = useState(0);
+  const [liveId, setLiveId] = useState<string | null>(null);
 
   const { text: streamText, done, push, end, reset } = useSmoothedText();
   const transcript = useScrollFade<HTMLDivElement>();
   const { showJump, jumpToLatest } = useStickToBottom(transcript.ref);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const transportRef = useRef<number | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const messagesRef = useRef(messages);
+  const walletRef = useRef<string | undefined>(undefined);
+  const fullTextRef = useRef("");
+  messagesRef.current = messages;
+  walletRef.current = connected?.account.address;
 
   const streaming = !done && !stopped;
-
-  useEffect(() => {
-    if (reduced) {
-      push(STREAM_TARGET);
-      end();
-      return;
-    }
-    const chunks = STREAM_TARGET.match(/\S+\s*/g) ?? [];
-    let i = 0;
-    transportRef.current = window.setInterval(() => {
-      const n = 1 + Math.floor(Math.random() * 3);
-      push(chunks.slice(i, i + n).join(""));
-      i += n;
-      if (i >= chunks.length) {
-        end();
-        if (transportRef.current) window.clearInterval(transportRef.current);
-        transportRef.current = null;
-      }
-    }, 130);
-    return () => {
-      if (transportRef.current) window.clearInterval(transportRef.current);
-    };
-  }, [reduced, push, end, runId]);
 
   const autosize = () => {
     const el = textareaRef.current;
@@ -386,39 +390,146 @@ export default function AiChat1() {
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   };
 
-  const handleSend = useCallback((text: string) => {
-    const t = text.trim();
-    if (!t) return;
-    setMessages((m) => [
-      ...m,
-      { id: `u-${Date.now()}`, role: "user", text: t },
-    ]);
-    setValue("");
-  }, []);
+  const runDecision = useCallback(
+    async (history: { role: "user" | "assistant"; text: string }[]) => {
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      const id = `a-${Date.now()}`;
+      const started = performance.now();
+      fullTextRef.current = "";
+      reset();
+      setStopped(false);
+      setLiveId(id);
+      setMessages((current) => [
+        ...current,
+        {
+          id,
+          role: "assistant",
+          text: "",
+          reasoning: "Reading the TypeDB rule book, then asking the local model.",
+          tool: {
+            name: "Read decision rules",
+            result: "Waiting for TypeDB, Helius, and Ollama.",
+            duration: "—",
+            done: false,
+          },
+          sources: [
+            { id: "typedb", title: "TypeDB" },
+            { id: "ollama", title: "Ollama" },
+            { id: "helius", title: "Helius" },
+          ],
+        },
+      ]);
+
+      const finishText = (text: string) => {
+        fullTextRef.current = text;
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === id && message.role === "assistant" ? { ...message, text } : message,
+          ),
+        );
+      };
+
+      try {
+        const response = await fetch("/api/decision", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            messages: history,
+            walletAddress: walletRef.current,
+          }),
+          signal: controller.signal,
+        });
+        if (!response.ok || !response.body) {
+          throw new Error(`The decision request failed (${response.status}).`);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { value: chunk, done: finished } = await reader.read();
+          if (finished) break;
+          buffer += decoder.decode(chunk, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const line of lines) {
+            consumeDecisionLine(line, id, started, push, (text) => {
+              fullTextRef.current += text;
+            }, setMessages);
+          }
+        }
+        consumeDecisionLine(buffer, id, started, push, (text) => {
+          fullTextRef.current += text;
+        }, setMessages);
+        const answer = fullTextRef.current.trim() || "The model returned an empty decision.";
+        if (!fullTextRef.current.trim()) push(answer);
+        finishText(answer);
+        end();
+      } catch (error) {
+        if (controller.signal.aborted) {
+          finishText(fullTextRef.current);
+          end();
+          return;
+        }
+        const message = error instanceof Error ? error.message : "The decision model failed.";
+        if (!fullTextRef.current) push(message);
+        finishText(fullTextRef.current || message);
+        end();
+      }
+    },
+    [end, push, reset],
+  );
+
+  const handleSend = useCallback(
+    (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed || streaming) return;
+      const history = [
+        ...messagesRef.current
+          .filter((message) => message.text.trim().length > 0)
+          .map((message) => ({ role: message.role, text: message.text })),
+        { role: "user" as const, text: trimmed },
+      ];
+      setMessages((current) => [...current, { id: `u-${Date.now()}`, role: "user", text: trimmed }]);
+      setValue("");
+      if (textareaRef.current) textareaRef.current.style.height = "auto";
+      void runDecision(history);
+    },
+    [runDecision, streaming],
+  );
 
   const handleStop = useCallback(() => {
-    if (transportRef.current) {
-      window.clearInterval(transportRef.current);
-      transportRef.current = null;
-    }
+    abortRef.current?.abort();
     end();
     setStopped(true);
   }, [end]);
 
   const handleRegenerate = useCallback(() => {
-    reset();
-    setStopped(false);
-    setRunId((n) => n + 1);
-  }, [reset]);
+    const history = messagesRef.current
+      .filter((message) => message.text.trim().length > 0)
+      .map((message) => ({ role: message.role, text: message.text }));
+    while (history.length > 0 && history[history.length - 1]?.role === "assistant") {
+      history.pop();
+    }
+    if (history.length === 0 || history[history.length - 1]?.role !== "user") return;
+    setMessages((current) => {
+      const next = [...current];
+      while (next.length > 0 && next[next.length - 1]?.role === "assistant") next.pop();
+      return next;
+    });
+    void runDecision(history);
+  }, [runDecision]);
 
   return (
     <div className="relative flex h-full min-h-[640px] w-full flex-col overflow-hidden bg-white dark:bg-neutral-950">
       <header className="shrink-0">
         <div className="mx-auto flex h-14 w-full max-w-3xl items-center justify-between gap-3 px-4 sm:px-6">
           <h1 className="text-base font-medium tracking-[-0.01em] text-neutral-900 dark:text-neutral-100">
-            Revenue assistant
+            Decision model
           </h1>
-          <span className="text-[13px] text-neutral-500">Atlas</span>
+          <span className="text-[13px] text-neutral-500">TevTrade</span>
         </div>
       </header>
 
@@ -441,8 +552,8 @@ export default function AiChat1() {
                   );
                 }
 
-                const live = message.id === LIVE_ID && streaming;
-                const settled = message.id === LIVE_ID && !streaming;
+                const live = message.id === liveId && streaming;
+                const settled = message.id === liveId && !streaming;
 
                 return (
                   <div key={message.id} className="space-y-3">
@@ -476,6 +587,10 @@ export default function AiChat1() {
                         <button
                           type="button"
                           aria-label="Copy reply"
+                          onClick={() => {
+                            const text = message.role === "assistant" ? message.text || streamText : "";
+                            void navigator.clipboard.writeText(text);
+                          }}
                           className="cursor-pointer inline-flex h-8 w-8 items-center justify-center rounded-[var(--rb-r-md,8px)] bg-neutral-100 text-neutral-600 transition-[transform,background-color,color] duration-100 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-neutral-200 hover:text-neutral-700 active:scale-[0.97] focus-visible:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--rb-accent,oklch(20.5%_0_0))] dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700 dark:hover:text-neutral-100 dark:focus-visible:outline-[var(--rb-accent,oklch(100%_0_0))]"
                         >
                           <Copy className="h-3.5 w-3.5 shrink-0" />
@@ -520,18 +635,6 @@ export default function AiChat1() {
 
         <div className="w-full shrink-0 px-4 pb-4 sm:px-6">
           <div className="rounded-[var(--rb-r-2xl,14px)] border border-neutral-200 bg-white px-3 pt-3 pb-2 transition-colors focus-within:border-neutral-300 dark:border-neutral-800 dark:bg-neutral-900 dark:focus-within:border-neutral-700">
-            <div className="flex flex-wrap gap-1.5 pb-2">
-              <span className="inline-flex h-7 items-center gap-1.5 rounded-[var(--rb-r-md,8px)] bg-neutral-100 pl-2 pr-1 text-[13px] text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
-                <span className="max-w-40 truncate">refunds-week-24.csv</span>
-                <button
-                  type="button"
-                  aria-label="Remove refunds-week-24.csv"
-                  className="cursor-pointer inline-flex h-5 w-5 items-center justify-center rounded-[var(--rb-r-xs,4px)] bg-white text-neutral-500 transition-colors duration-150 ease-out hover:bg-neutral-200 hover:text-neutral-700 focus-visible:outline-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--rb-accent,oklch(20.5%_0_0))] dark:bg-neutral-900 dark:hover:bg-neutral-700 dark:focus-visible:outline-[var(--rb-accent,oklch(100%_0_0))]"
-                >
-                  <X className="h-3.5 w-3.5 shrink-0" />
-                </button>
-              </span>
-            </div>
             <textarea
               ref={textareaRef}
               rows={1}
@@ -550,13 +653,6 @@ export default function AiChat1() {
               className="block max-h-40 w-full resize-none bg-transparent text-sm leading-6 text-neutral-900 outline-none placeholder:text-neutral-500 dark:text-neutral-100"
             />
             <div className="flex items-center gap-1 pt-2">
-              <button
-                type="button"
-                aria-label="Add attachment"
-                className="cursor-pointer inline-flex h-8 w-8 items-center justify-center rounded-[var(--rb-r-md,8px)] bg-neutral-100 text-neutral-500 transition-[transform,background-color,color] duration-100 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-neutral-200 hover:text-neutral-700 active:scale-[0.97] focus-visible:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--rb-accent,oklch(20.5%_0_0))] dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700 dark:hover:text-neutral-100 dark:focus-visible:outline-[var(--rb-accent,oklch(100%_0_0))]"
-              >
-                <Plus className="h-4 w-4 shrink-0" />
-              </button>
               <div className="ml-auto flex items-center gap-1">
                 {streaming ? (
                   <button
